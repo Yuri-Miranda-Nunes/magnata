@@ -9,7 +9,7 @@ const assert = require('assert');
 // Carrega board.js + game.js no mesmo contexto global, como no navegador
 const ctx = vm.createContext({ console, Date, Math });
 for (const f of ['board.js', 'game.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), ctx, { filename: f });
-const G = vm.runInContext('({ generateBoard, createGame, applyAction, tick, currentPlayer, pById, buildCost, autoLiquidate, RECONNECT_GRACE_MS })', ctx);
+const G = vm.runInContext('({ generateBoard, createGame, applyAction, tick, currentPlayer, pById, buildCost, autoLiquidate, RECONNECT_GRACE_MS, CARDS, drawCard, bankrupt, newAnim })', ctx);
 
 function checkInvariants(s) {
   for (const t of s.board.tiles) {
@@ -103,7 +103,7 @@ for (const n of [2, 4, 6, 8]) {
   const s = G.createGame(lobby, 45);
   while (s.phase === 'order') G.applyAction(s, s.orderPending[0], 'rollOrder');
   const p0 = G.currentPlayer(s);
-  p0.conectado = false; p0.desconectadoEm = Date.now();
+  p0.conectado = false;
   assert(!G.tick(s, Date.now() + 3000), 'não deveria pular a vez logo após a queda (refresh)');
   assert(G.tick(s, Date.now() + 12000), 'deveria pular a vez do desconectado');
   assert.notStrictEqual(G.currentPlayer(s).id, p0.id);
@@ -111,7 +111,8 @@ for (const n of [2, 4, 6, 8]) {
   assert(p0.bancarroto && !s.turnos.includes(p0.id), 'desconectado deveria falir após o prazo');
   checkInvariants(s);
   // limite de tempo encerra a partida
-  G.tick(s, s.endsAt + 1);
+  s.elapsedMs = s.timeLimitMs;
+  G.tick(s, Date.now() + G.RECONNECT_GRACE_MS + 6000);
   assert.strictEqual(s.phase, 'gameover');
   assert(s.winnerId);
   console.log('✔ desconexão, prazo de reconexão e limite de tempo');
@@ -148,6 +149,69 @@ console.log('✔ sorteio da ordem com desempate');
   const m = s.anim.moves[0];
   assert(m && m.playerId === p.id && m.from === from && m.steps === s.dice[0] + s.dice[1], 'primeiro movimento deve ser a rolagem');
   console.log('✔ movimentos registrados para animação');
+}
+
+// 7) Credor que já faliu não recebe dinheiro nem bens
+const started = n => {
+  const s = G.createGame(Array.from({ length: n }, (_, i) => ({ id: 'p' + i, name: 'P' + i, color: '#fff' })), 0);
+  while (s.phase === 'order') G.applyAction(s, s.orderPending[0], 'rollOrder');
+  return s;
+};
+{
+  const s = started(3);
+  const [a, b] = s.turnos.map(id => G.pById(s, id));
+  G.bankrupt(s, b, null);
+  s.phase = 'debt'; s.debt = { amount: 100, creditorId: b.id };
+  assert.strictEqual(G.applyAction(s, a.id, 'payDebt'), null);
+  assert.strictEqual(b.saldo, 0, 'credor falido não deve receber');
+  const t = s.board.tiles.find(x => x.type === 'property');
+  t.owner = a.id; a.propriedades.push(t.id);
+  s.phase = 'debt'; s.debt = { amount: 1e9, creditorId: b.id };
+  G.applyAction(s, a.id, 'bankrupt');
+  assert.strictEqual(t.owner, null, 'bens de quem deve a um falido voltam ao banco');
+  assert.strictEqual(b.propriedades.length, 0);
+  checkInvariants(s);
+  console.log('✔ credor falido não recebe dinheiro nem bens');
+}
+
+// 8) "Pague a cada jogador" sem dinheiro abre dívida (jogador escolhe o que vender) e divide ao quitar
+{
+  const s = started(3);
+  const p = G.currentPlayer(s);
+  const others = s.turnos.filter(id => id !== p.id).map(id => G.pById(s, id));
+  const t = s.board.tiles.filter(x => x.type === 'property').pop();
+  t.owner = p.id; p.propriedades.push(t.id);
+  p.saldo = 10;
+  const before = others.map(o => o.saldo);
+  s.decks.chance = [G.CARDS.chance.findIndex(c => c.t === 'each')];
+  s.phase = 'moving'; G.newAnim(s);
+  G.drawCard(s, p, 'chance');
+  assert.strictEqual(s.phase, 'debt', 'deveria abrir a fase de dívida');
+  assert.strictEqual(s.debt.splitTo.length, 2);
+  assert.strictEqual(t.level, 0); assert(!t.mortgage, 'nada pode ser vendido sem o jogador escolher');
+  p.saldo = 1e6;
+  assert.strictEqual(G.applyAction(s, p.id, 'payDebt'), null);
+  others.forEach((o, i) => assert(o.saldo > before[i], 'cada jogador deveria receber sua parte'));
+  console.log('✔ carta "pague a cada jogador" vira dívida dividida');
+}
+
+// 9) Habeas Corpus fica fora do baralho enquanto alguém o guarda
+{
+  const s = started(2);
+  const p = G.currentPlayer(s);
+  const jail = G.CARDS.chance.findIndex(c => c.t === 'jailCard');
+  s.decks.chance = [jail];
+  s.phase = 'moving'; G.newAnim(s);
+  G.drawCard(s, p, 'chance');
+  assert.strictEqual(s.jailCardOut.chance, p.id);
+  s.decks.chance = [];
+  G.drawCard(s, p, 'chance');                     // força o embaralhamento
+  assert(!s.decks.chance.includes(jail), 'Habeas Corpus guardado não pode voltar ao baralho');
+  // A segunda carta pode ter movido o jogador; recoloca-o preso e na vez para usar o Habeas Corpus
+  p.preso = true; s.phase = 'roll'; s.debt = null; s.turnoAtual = s.turnos.indexOf(p.id);
+  assert.strictEqual(G.applyAction(s, p.id, 'useJailCard'), null);
+  assert.strictEqual(s.jailCardOut.chance, null, 'ao usar, a carta é liberada');
+  console.log('✔ Habeas Corpus fora do baralho enquanto guardado');
 }
 
 // 6) Ações fora da vez são recusadas

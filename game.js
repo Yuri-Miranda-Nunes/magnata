@@ -25,7 +25,7 @@ class Player {
     this.turnosPreso = 0;
     this.cartasSaida = 0;     // cartas "Habeas Corpus"
     this.conectado = true;
-    this.desconectadoEm = null;
+    this.ausenteMs = 0;       // tempo desconectado, contado pelo host
     Object.assign(this, data);
   }
 
@@ -114,6 +114,12 @@ const mortgageValue = t => round10(t.price / 2);
 const unmortgageCost = t => round10(t.price * 0.55);
 const jailFine = s => round10(500 * s.board.factor);
 
+// Credita um jogador; credor que já faliu não recebe (o valor volta ao banco)
+function credit(s, id, amount) {
+  const c = id ? pById(s, id) : null;
+  if (c && !c.bancarroto) c.saldo += amount;
+}
+
 function log(s, msg) {
   s.log.push({ t: Date.now(), msg });
   if (s.log.length > LOG_MAX) s.log.shift();
@@ -165,9 +171,12 @@ function createGame(lobby, timeLimitMin = 45) {
     orderPending: players.map(p => p.id),
     dice: [1, 1], rollSeq: 0, doublesCount: 0, extraRoll: false,
     pendingBuy: null, debt: null, lastCard: null, winnerId: null,
+    jailCardOut: { chance: null, community: null },   // quem guarda o Habeas Corpus de cada baralho
     anim: { seq: 0, moves: [] },      // movimentos da última ação, para a animação casa a casa
     decks: { chance: shuffle([...CARDS.chance.keys()]), community: shuffle([...CARDS.community.keys()]) },
-    log: [], startedAt: now, endsAt: timeLimitMin > 0 ? now + timeLimitMin * 60000 : null, phaseSince: now,
+    log: [], startedAt: now, phaseSince: now,
+    // Tempo medido em duração (somado pelo host a cada tick), não em horário: relógios diferem entre máquinas
+    timeLimitMs: timeLimitMin > 0 ? timeLimitMin * 60000 : 0, elapsedMs: 0, tickAt: null,
   };
   log(s, `Partida iniciada com ${players.length} jogadores — tabuleiro de ${board.size} casas e ${board.sets} conjuntos.`);
   log(s, '🎲 Todos rolam os dados: quem tirar mais começa.');
@@ -315,7 +324,7 @@ function land(s, p) {
 // Cobrança do jogador da vez: se faltar dinheiro, abre a fase de dívida
 function charge(s, p, amount, creditorId) {
   if (p.pagar(amount)) {
-    if (creditorId) pById(s, creditorId).saldo += amount;
+    credit(s, creditorId, amount);
     return true;
   }
   if (p.saldo + liquidationValue(s, p) < amount) {
@@ -333,7 +342,7 @@ function charge(s, p, amount, creditorId) {
 function forceCharge(s, p, amount, creditorId) {
   if (p.saldo < amount) autoLiquidate(s, p, amount);
   if (p.pagar(amount)) {
-    if (creditorId) pById(s, creditorId).saldo += amount;
+    credit(s, creditorId, amount);
     return true;
   }
   bankrupt(s, p, creditorId);
@@ -366,10 +375,12 @@ function autoLiquidate(s, p, amount) {
 }
 
 function bankrupt(s, p, creditorId) {
-  const cred = creditorId ? pById(s, creditorId) : null;
+  let cred = creditorId ? pById(s, creditorId) : null;
+  if (cred && cred.bancarroto) cred = null;   // credor já saiu do jogo: bens voltam ao banco
   log(s, `💀 ${p.nome} faliu${cred ? ` — os bens vão para ${cred.nome}` : ' — os bens voltam ao banco'}.`);
   if (cred) cred.saldo += p.saldo;
   const wasCurrent = currentPlayer(s) === p;
+  for (const d of Object.keys(s.jailCardOut || {})) if (s.jailCardOut[d] === p.id) s.jailCardOut[d] = null;
   for (const i of p.declararFalencia()) {
     const t = tileAt(s, i);
     t.level = 0;
@@ -381,7 +392,10 @@ function bankrupt(s, p, creditorId) {
 
 /* ------------------------------ Cartas ------------------------------ */
 function drawCard(s, p, deck) {
-  if (!s.decks[deck].length) s.decks[deck] = shuffle([...CARDS[deck].keys()]);
+  s.jailCardOut = s.jailCardOut || { chance: null, community: null };
+  if (!s.decks[deck].length) {
+    s.decks[deck] = shuffle([...CARDS[deck].keys()].filter(k => !(CARDS[deck][k].t === 'jailCard' && s.jailCardOut[deck])));
+  }
   const card = CARDS[deck][s.decks[deck].shift()];
   const scale = v => round10((v || 0) * s.board.factor);
   const v = scale(card.v);
@@ -409,18 +423,26 @@ function drawCard(s, p, deck) {
       break;
     case 'jailCard':
       p.cartasSaida++;
+      s.jailCardOut[deck] = p.id;
       break;
     case 'extra':
       s.extraRoll = true;
       break;
-    case 'each':
-      for (const o of s.turnos.map(id => pById(s, id))) {
-        if (o === p) continue;
-        if (v > 0) forceCharge(s, o, v, p.id);
-        else if (!forceCharge(s, p, -v, o.id)) break;   // faliu pagando
-        if (s.phase === 'gameover') break;
+    case 'each': {
+      const others = s.turnos.map(id => pById(s, id)).filter(o => o !== p);
+      if (v > 0) {
+        // Os outros pagam fora da vez: liquidação automática se faltar dinheiro
+        for (const o of others) {
+          forceCharge(s, o, v, p.id);
+          if (s.phase === 'gameover') break;
+        }
+      } else if (charge(s, p, -v * others.length, null)) {
+        others.forEach(o => credit(s, o.id, -v));
+      } else if (s.phase === 'debt') {
+        Object.assign(s.debt, { splitTo: others.map(o => o.id), each: -v });   // ao quitar, divide entre eles
       }
       break;
+    }
     case 'repairs': {
       const props = p.propriedades.map(i => tileAt(s, i));
       const cost = props.reduce((sum, t) => sum + (t.level === 5 ? scale(card.H) : t.level * scale(card.h)), 0);
@@ -544,14 +566,19 @@ function applyAction(s, playerId, action, data = {}) {
     case 'useJailCard':
       if (!p.preso || s.phase !== 'roll' || p.cartasSaida <= 0) return 'Sem Habeas Corpus para usar.';
       p.cartasSaida--; p.preso = false; p.turnosPreso = 0;
+      {
+        const d = Object.keys(s.jailCardOut || {}).find(k => s.jailCardOut[k] === p.id);
+        if (d) s.jailCardOut[d] = null;   // volta ao baralho no próximo embaralhamento
+      }
       log(s, `${p.nome} usou um Habeas Corpus.`);
       return null;
 
     case 'payDebt': {
       if (s.phase !== 'debt') return 'Não há dívida pendente.';
-      const { amount, creditorId } = s.debt;
+      const { amount, creditorId, splitTo, each } = s.debt;
       if (!p.pagar(amount)) return `Faltam ${fmt(amount - p.saldo)}.`;
-      if (creditorId) pById(s, creditorId).saldo += amount;
+      if (splitTo) splitTo.forEach(id => credit(s, id, each));
+      else credit(s, creditorId, amount);
       log(s, `${p.nome} quitou a dívida de ${fmt(amount)}.`);
       s.debt = null;
       finish(s);
@@ -590,15 +617,21 @@ function autoPlay(s, p) {
 function tick(s, now = Date.now()) {
   if (s.phase === 'gameover') return false;
   let changed = false;
+  // Duração desde o último tick deste host (limitada caso a aba tenha ficado congelada)
+  const dt = s.tickAt ? Math.min(Math.max(now - s.tickAt, 0), 120000) : 0;
+  s.tickAt = now;
+  s.elapsedMs = (s.elapsedMs || 0) + dt;
   for (const p of s.players) {
-    if (!p.bancarroto && !p.conectado && now - p.desconectadoEm > RECONNECT_GRACE_MS) {
+    if (p.bancarroto || p.conectado) continue;
+    p.ausenteMs = (p.ausenteMs || 0) + dt;
+    if (p.ausenteMs > RECONNECT_GRACE_MS) {
       log(s, `${p.nome} não voltou a tempo.`);
       bankrupt(s, p, null);
       changed = true;
       if (s.phase === 'gameover') return true;
     }
   }
-  if (s.endsAt && now >= s.endsAt) { endByTime(s); return true; }
+  if (s.timeLimitMs && s.elapsedMs >= s.timeLimitMs) { endByTime(s); return true; }
   const idle = now - s.phaseSince;
   const late = p => (!p.conectado && idle > AWAY_SKIP_MS) || idle > TURN_TIMEOUT_MS;
   if (s.phase === 'order') {
@@ -683,6 +716,7 @@ const UI = {
 
   render(s) {
     this.state = s;
+    this._clock = { left: (s.timeLimitMs || 0) - (s.elapsedMs || 0), at: Date.now() };
     this.show('game');
     const board = this.$('board');
     if (this.builtSeq !== s.startedAt) {
@@ -937,6 +971,8 @@ const UI = {
 
   /* ---------- Modais ---------- */
   openModal(kind, html) {
+    if (this.modalKind === kind && this._modalHtml === html) return;
+    this._modalHtml = html;
     this.modalKind = kind;
     this.$('modal-box').innerHTML = html;
     this.$('modal').classList.remove('hidden');
@@ -946,6 +982,7 @@ const UI = {
 
   closeModal() {
     this.modalKind = null;
+    this._modalHtml = null;
     this.openTile = null;
     this._modalCardSeq = null;
     this.$('modal').classList.add('hidden');
@@ -984,20 +1021,21 @@ const UI = {
           <button class="btn btn-secondary" data-act="decline">Recusar</button>
         </div>
         ${me.saldo < t.price ? '<p class="text-xs text-amber-300 mt-2">Saldo insuficiente: hipoteque propriedades no painel lateral ou recuse.</p>' : ''}`;
-      if (this.modalKind !== 'buy' || this._lastBuyHtml !== html) { this._lastBuyHtml = html; this.openModal('buy', html); }
+      this.openModal('buy', html);
       return;
     }
     if (want === 'debt') {
       const html = this.cardBlock(s) + `
         <h2 class="text-xl font-bold mb-2">⚠️ Dívida de ${fmt(s.debt.amount)}</h2>
-        <p class="mb-1">Credor: <b>${s.debt.creditorId ? esc(pById(s, s.debt.creditorId).nome) : 'Banco'}</b> · Seu saldo: <b>${fmt(me.saldo)}</b></p>
+        <p class="mb-1">Credor: <b>${s.debt.splitTo ? 'os outros jogadores' : s.debt.creditorId ? esc(pById(s, s.debt.creditorId).nome) : 'Banco'}</b> · Seu saldo: <b>${fmt(me.saldo)}</b></p>
         <p class="text-sm text-slate-300 mb-3">Venda construções ou hipoteque propriedades (toque nelas no painel) até ter saldo suficiente.</p>
         <div class="space-y-1 mb-3">${me.propriedades.map(i => tileAt(s, i)).map(t => `
           <div class="flex items-center gap-2 text-sm">
             <span class="flex-1">${esc(t.name)}</span>
             ${t.level > 0 ? `<button class="btn-mini" data-act="sell" data-idx="${t.id}">Vender 🏠 +${fmt(round10(buildCost(t, t.level - 1) / 2))}</button>` : ''}
-            ${!t.mortgage && t.level === 0 ? `<button class="btn-mini" data-act="mortgage" data-idx="${t.id}">Hipotecar +${fmt(mortgageValue(t))}</button>` : ''}
+            ${!t.mortgage && !(t.colorGroup && groupTiles(s, t.colorGroup).some(x => x.level > 0)) ? `<button class="btn-mini" data-act="mortgage" data-idx="${t.id}">Hipotecar +${fmt(mortgageValue(t))}</button>` : ''}
             ${t.mortgage ? '<span class="text-slate-500">hipotecada</span>' : ''}
+            ${!t.mortgage && t.level === 0 && t.colorGroup && groupTiles(s, t.colorGroup).some(x => x.level > 0) ? '<span class="text-slate-500">venda as casas da cor para hipotecar</span>' : ''}
           </div>`).join('')}</div>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-primary" data-act="payDebt" ${me.saldo < s.debt.amount ? 'disabled' : ''}>Pagar ${fmt(s.debt.amount)}</button>
@@ -1158,8 +1196,10 @@ const UI = {
     setInterval(() => {
       const s = this.state, el = this.$('g-timer');
       if (!s || !el) return;
-      if (!s.endsAt) { el.textContent = 'sem limite'; return; }
-      const left = Math.max(0, s.endsAt - Date.now());
+      if (!s.timeLimitMs) { el.textContent = 'sem limite'; return; }
+      // Conta localmente a partir do último estado recebido (sem depender do relógio do host)
+      const c = this._clock;
+      const left = Math.max(0, c.left - (s.phase === 'gameover' ? 0 : Date.now() - c.at));
       el.textContent = `${Math.floor(left / 60000)}:${String(Math.floor(left / 1000) % 60).padStart(2, '0')}`;
     }, 1000);
   },

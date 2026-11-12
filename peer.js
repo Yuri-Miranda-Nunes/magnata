@@ -14,7 +14,7 @@
  *   action        Cliente → Host   { playerId, action, data }
  *   update-state  Host → Todos     estado completo do jogo
  *   end-turn      Host → Todos     { nextPlayerId }
- *   disconnect    Qualquer → Host  saída voluntária
+ *   disconnect    Qualquer → Host  saída voluntária (o host também avisa todos quando ele sai)
  *   ping / pong   batimento para detectar quedas
  *   redirect/wait resposta de um peer que não é o host (aponta o host / pede para aguardar a eleição)
  * ========================================================================= */
@@ -44,7 +44,7 @@ const Net = {
   lobby: [],
   state: null,
   electing: false,
-  _pendingFail: null,
+  _pending: null,         // tentativa de conexão em andamento { id, token, fail }
 
   /* ---------------- Sessão (sobrevive ao refresh) ---------------- */
   // Uma chave por aba (sessionStorage) para permitir vários jogadores no mesmo navegador
@@ -93,7 +93,10 @@ const Net = {
   bindPeer(peer) {
     peer.on('connection', conn => this.onIncoming(conn));
     peer.on('error', err => {
-      if (err.type === 'peer-unavailable') { if (this._pendingFail) this._pendingFail(); }
+      if (err.type === 'peer-unavailable') {
+        // A mensagem traz o id do peer; erro atrasado de uma tentativa antiga não derruba a atual
+        if (this._pending && String(err.message).includes(this._pending.id)) this._pending.fail();
+      }
       else console.warn('PeerJS:', err.type, err);
     });
     // Perdeu o servidor de sinalização: reconecta (as conexões diretas continuam)
@@ -101,6 +104,9 @@ const Net = {
   },
 
   setMyId(id) { this.myId = id; UI.myId = id; },
+
+  // Código para convidar: o id do host atual sem o prefixo (ex.: ABCDE ou, após troca de host, ABCDE-WXYZ)
+  inviteCode() { return this.hostId ? this.hostId.slice(PEER_PREFIX.length) : this.roomCode; },
 
   /* ---------------- Lobby ---------------- */
   async createRoom() {
@@ -146,6 +152,7 @@ const Net = {
 
   leave() {
     if (!this.isHost && this.hostConn && this.hostConn.open) this.hostConn.send({ type: 'disconnect', payload: { id: this.myId } });
+    if (this.isHost) this.broadcast('disconnect', { id: this.myId });   // os outros elegem um novo host na hora
     this.clear();
     setTimeout(() => { location.href = location.pathname; }, 300);
   },
@@ -173,7 +180,7 @@ const Net = {
   broadcastLobby() {
     this.broadcast('players-list', this.lobby);
     this.save();
-    UI.renderLobby(this.lobby, true, this.roomCode);
+    UI.renderLobby(this.lobby, true, this.inviteCode());
   },
 
   // Toda mudança de estado passa por aqui: incrementa a versão e envia o estado completo
@@ -224,7 +231,7 @@ const Net = {
       const pl = pById(this.state, id);
       if (!pl) { refuse('A partida já começou.'); return; }
       this.conns.set(id, conn);
-      if (!pl.conectado) { pl.conectado = true; pl.desconectadoEm = null; log(this.state, `🔌 ${pl.nome} reconectou.`); }
+      if (!pl.conectado) { pl.conectado = true; pl.ausenteMs = 0; log(this.state, `🔌 ${pl.nome} reconectou.`); }
       conn.send({ type: 'start-game', payload: { boardConfig: this.state.board, players: this.state.players, initialMoney: this.state.board.initialMoney } });
       this.broadcastState();
       return;
@@ -257,7 +264,7 @@ const Net = {
         bankrupt(s, p, null);
       } else if (p.conectado) {
         p.conectado = false;
-        p.desconectadoEm = Date.now();
+        p.ausenteMs = 0;
         log(s, `📴 ${p.nome} desconectou — tem ${RECONNECT_GRACE_MS / 1000}s para voltar.`);
       } else return;
       this.broadcastState(before);
@@ -279,7 +286,11 @@ const Net = {
     if (this.state) {
       const s = hydrate(this.state);
       const dead = deadId && pById(s, deadId);
-      if (dead && !dead.bancarroto && dead.conectado) { dead.conectado = false; dead.desconectadoEm = now; }
+      s.tickAt = null;   // o tempo passa a ser contado pelo relógio deste host
+      if (dead && !dead.bancarroto && this.hostLeft === deadId) {
+        log(s, `🚪 ${dead.nome} saiu da partida.`);
+        bankrupt(s, dead, null);
+      } else if (dead && !dead.bancarroto && dead.conectado) { dead.conectado = false; dead.ausenteMs = 0; }
       // Quem não se conectar ao novo host em PEER_TIMEOUT_MS será marcado como desconectado
       s.players.forEach(p => { if (p.id !== this.myId && p.conectado && !p.bancarroto) this.lastSeen.set(p.id, now); });
       log(s, `👑 ${pById(s, this.myId).nome} assumiu como host.`);
@@ -306,12 +317,13 @@ const Net = {
         if (done) return;
         done = true;
         clearTimeout(timer);
-        this._pendingFail = null;
+        if (this._pending && this._pending.token === token) this._pending = null;
         if (r !== true) conn.close();
         resolve(r);
       };
       const timer = setTimeout(() => end(false), CONNECT_TIMEOUT_MS);
-      this._pendingFail = () => end(false);
+      const token = {};
+      this._pending = { id, token, fail: () => end(false) };
       conn.on('open', () => conn.send({ type: 'join', payload: { id: this.myId, name: this.me.name, color: this.me.color, deadHost } }));
       conn.on('data', msg => {
         if (!msg || typeof msg !== 'object') return;
@@ -350,9 +362,15 @@ const Net = {
         if (!id || tried.has(id)) continue;
         tried.add(id);
         let r = await this.connectTo(id, deadHost);
-        for (let w = 0; r && r.wait && w < 6; w++) { await sleep(1500); r = await this.connectTo(id, deadHost); }
+        // "wait" ou redirect para o host que caiu: o candidato ainda não percebeu a queda.
+        // Não pula para o próximo (isso criaria dois hosts); confere o host antigo e insiste no mesmo candidato.
+        for (let w = 0; r && (r.wait || (deadHost && r.redirect === deadHost)) && w < 8; w++) {
+          if (r.redirect && (await this.connectTo(deadHost)) === true) return true;   // o host antigo ainda responde
+          await sleep(1500);
+          r = await this.connectTo(id, deadHost);
+        }
         if (r === true) return true;
-        if (r && r.redirect) queue.unshift(r.redirect);
+        if (r && r.redirect && r.redirect !== deadHost) queue.unshift(r.redirect);
       }
       await sleep(2500);
     }
@@ -367,7 +385,7 @@ const Net = {
       case 'players-list':
         this.lobby = payload;
         this.save();
-        if (!this.state) UI.renderLobby(this.lobby, false, this.roomCode);
+        if (!this.state) UI.renderLobby(this.lobby, false, this.inviteCode());
         break;
       case 'start-game':
         UI.show('game');
@@ -382,6 +400,10 @@ const Net = {
         break;
       case 'end-turn':
         break; // informativo: o update-state já traz de quem é a vez
+      case 'disconnect':
+        // O próprio host saiu de propósito: elege outro já, e o novo host o retira da partida
+        if (payload && payload.id === this.hostId) { this.hostLeft = this.hostId; this.onHostLost(); }
+        break;
       case 'ping':
         conn.send({ type: 'pong' });
         break;
@@ -518,7 +540,7 @@ const Net = {
     UI.$('btn-leave').onclick = () => this.leave();
     UI.$('btn-leave-game').onclick = () => { if (confirm('Sair da partida? Seus bens voltam ao banco.')) this.leave(); };
     UI.$('btn-copy').onclick = () => {
-      const link = `${location.origin}${location.pathname}?sala=${this.roomCode}`;
+      const link = `${location.origin}${location.pathname}?sala=${this.inviteCode()}`;
       navigator.clipboard.writeText(link).then(() => UI.toast('Link copiado!'), () => UI.toast(link, 6000));
     };
 
