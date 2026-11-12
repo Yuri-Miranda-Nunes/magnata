@@ -27,6 +27,7 @@ function checkInvariants(s) {
 
 // Política simples de bot
 function botTurn(s) {
+  if (s.phase === 'order') return G.applyAction(s, s.orderPending[0], 'rollOrder');
   const p = G.currentPlayer(s);
   const reserve = s.board.initialMoney * 0.15;
   const act = (a, d) => G.applyAction(s, p.id, a, d);
@@ -100,6 +101,7 @@ for (const n of [2, 4, 6, 8]) {
 {
   const lobby = [0, 1, 2].map(i => ({ id: 'p' + i, name: 'P' + i, color: '#fff' }));
   const s = G.createGame(lobby, 45);
+  while (s.phase === 'order') G.applyAction(s, s.orderPending[0], 'rollOrder');
   const p0 = G.currentPlayer(s);
   p0.conectado = false; p0.desconectadoEm = Date.now();
   assert(!G.tick(s, Date.now() + 3000), 'não deveria pular a vez logo após a queda (refresh)');
@@ -115,12 +117,47 @@ for (const n of [2, 4, 6, 8]) {
   console.log('✔ desconexão, prazo de reconexão e limite de tempo');
 }
 
-// 4) Ações fora da vez são recusadas
+// 4) Sorteio da ordem: todos rolam, empates rolam de novo, ordem decrescente pela soma
+for (let r = 0; r < 200; r++) {
+  const lobby = Array.from({ length: 8 }, (_, i) => ({ id: 'p' + i, name: 'P' + i, color: '#fff' }));
+  const s = G.createGame(lobby, 0);
+  assert.strictEqual(s.phase, 'order');
+  assert(G.applyAction(s, 'p0', 'roll'), 'não pode rolar normalmente durante o sorteio');
+  let guard = 0;
+  while (s.phase === 'order' && guard++ < 500) {
+    const id = s.orderPending[0];
+    assert.strictEqual(G.applyAction(s, id, 'rollOrder'), null);
+    if (!s.orderPending.includes(id)) assert(G.applyAction(s, id, 'rollOrder'), 'não pode rolar duas vezes na mesma rodada');
+  }
+  assert.strictEqual(s.phase, 'roll');
+  assert.deepStrictEqual([...s.turnos].sort(), lobby.map(p => p.id).sort());
+  for (let i = 1; i < s.turnos.length; i++) {
+    const a = s.orderRolls[s.turnos[i - 1]], b = s.orderRolls[s.turnos[i]];
+    assert(a[0] >= b[0], 'ordem deve ser decrescente pela primeira rolagem');
+    if (a[0] === b[0]) assert(JSON.stringify(a) !== JSON.stringify(b), 'empate não resolvido');
+  }
+}
+console.log('✔ sorteio da ordem com desempate');
+
+// 5) Movimentos registrados para a animação casa a casa
 {
   const s = G.createGame([{ id: 'a', name: 'A', color: '#fff' }, { id: 'b', name: 'B', color: '#000' }], 0);
-  assert(G.applyAction(s, 'b', 'roll'), 'jogador fora da vez não pode rolar');
+  while (s.phase === 'order') G.applyAction(s, s.orderPending[0], 'rollOrder');
+  const p = G.currentPlayer(s), from = p.posicao;
+  G.applyAction(s, p.id, 'roll');
+  const m = s.anim.moves[0];
+  assert(m && m.playerId === p.id && m.from === from && m.steps === s.dice[0] + s.dice[1], 'primeiro movimento deve ser a rolagem');
+  console.log('✔ movimentos registrados para animação');
+}
+
+// 6) Ações fora da vez são recusadas
+{
+  const s = G.createGame([{ id: 'a', name: 'A', color: '#fff' }, { id: 'b', name: 'B', color: '#000' }], 0);
+  while (s.phase === 'order') G.applyAction(s, s.orderPending[0], 'rollOrder');
+  const [first, second] = s.turnos;
+  assert(G.applyAction(s, second, 'roll'), 'jogador fora da vez não pode rolar');
   assert(G.applyAction(s, 'x', 'roll'), 'jogador desconhecido não pode agir');
-  assert(G.applyAction(s, 'a', 'endTurn'), 'não pode encerrar antes de rolar');
+  assert(G.applyAction(s, first, 'endTurn'), 'não pode encerrar antes de rolar');
   console.log('✔ validação de vez e fase');
 }
 console.log('Todos os testes passaram.');

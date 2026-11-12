@@ -18,7 +18,8 @@ O diferencial é o **tabuleiro dinâmico**: ele cresce conforme o número de jog
 
 ## Como jogar
 
-- Na sua vez, clique em **🎲 Rolar Dados**. O peão anda a soma dos dois dados. **Dupla** dá direito a jogar de novo; três duplas seguidas mandam para a prisão.
+- **Sorteio da ordem:** no início, todos rolam os dados e quem tirar mais começa. Quem empatar rola de novo até desempatar.
+- Na sua vez, clique em **🎲 Rolar Dados**. O peão anda casa a casa a soma dos dois dados. **Dupla** dá direito a jogar de novo; três duplas seguidas mandam para a prisão.
 - **Propriedade livre:** abre um modal para comprar ou recusar.
 - **Propriedade de outro jogador:** você paga aluguel automaticamente. O valor sobe com casas e hotel; conjunto completo sem construções paga aluguel em dobro. Estações cobram pelo número de estações do dono; companhias cobram *dados × multiplicador*.
 - **Construir:** toque numa propriedade sua (no tabuleiro ou no painel). Só é possível construir se você tiver **todos os terrenos da mesma cor** e nenhum hipotecado. São até 4 casas + 1 hotel, e cada nível custa mais que o anterior.

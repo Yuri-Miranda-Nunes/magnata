@@ -9,12 +9,13 @@
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
-<body class="bg-slate-900 text-slate-100">
+<body class="text-slate-100">
 
   <!-- ===================== LOBBY ===================== -->
   <section id="screen-lobby" class="min-h-screen flex items-center justify-center p-4">
-    <div class="w-full max-w-lg bg-slate-800 rounded-2xl p-6 shadow-2xl border border-slate-700">
-      <h1 class="text-3xl font-extrabold text-center">🏙️ Magnata</h1>
+    <div class="lobby-card w-full max-w-lg rounded-3xl p-6 sm:p-8">
+      <div class="text-center text-5xl mb-1" aria-hidden="true">🏙️</div>
+      <h1 class="logo text-4xl text-center">MAGNATA</h1>
       <p class="text-center text-slate-400 mb-6">Tabuleiro dinâmico · multiplayer P2P · 2 a 8 jogadores</p>
 
       <!-- Entrada: nome, cor, criar ou entrar -->
@@ -72,8 +73,8 @@
 
   <!-- ===================== JOGO ===================== -->
   <section id="screen-game" class="hidden h-screen flex flex-col">
-    <header class="flex items-center gap-3 px-3 py-2 bg-slate-800 border-b border-slate-700 text-sm">
-      <span class="font-extrabold">🏙️ Magnata</span>
+    <header class="game-header flex items-center gap-3 px-3 py-2 text-sm">
+      <span class="flex items-center gap-1"><span class="text-lg" aria-hidden="true">🏙️</span><span class="logo text-lg">MAGNATA</span></span>
       <span class="text-slate-400">Sala <b id="g-room" class="font-mono text-amber-300"></b></span>
       <span class="text-slate-400">⏱ <b id="g-timer"></b></span>
       <span class="flex-1"></span>
@@ -95,7 +96,7 @@
       <!-- Sidebar direita: ações, saldo, propriedades, jogadores e eventos -->
       <aside id="sidebar" class="sidebar">
         <section class="panel">
-          <h2 class="panel-title">Sua jogada</h2>
+          <h2 id="turn-title" class="panel-title">Jogada</h2>
           <div id="turn-panel" class="space-y-2"></div>
         </section>
         <section class="panel">
@@ -122,6 +123,7 @@
     <div id="modal-box" class="modal-box"></div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="banner" class="banner" aria-hidden="true"></div>
 
   <script src="board.js"></script>
   <script src="game.js"></script>

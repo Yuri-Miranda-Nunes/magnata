@@ -168,16 +168,26 @@ function buildBoardDOM(el, board) {
       <div class="tile-tokens"></div>
     </div>`;
   }).join('') + `<div class="board-center" style="grid-row:2/${G};grid-column:2/${G}">
-      <div class="center-title">🏙️ MAGNATA</div>
-      <div class="center-sub">${board.size} casas · ${board.sets} conjuntos</div>
-      <div id="dice" class="dice">🎲 🎲</div>
+      <div class="center-title">MAGNATA</div>
+      <div class="center-sub">${board.size} casas · ${board.sets} conjuntos · salário ${fmt(board.salary)}</div>
+      <div id="dice" class="dice-tray"><div class="die">${dieFaceHTML(1)}</div><div class="die">${dieFaceHTML(1)}</div></div>
       <div id="center-turn" class="center-turn"></div>
+      <div id="center-order" class="center-order hidden"></div>
       <div id="center-card" class="center-card hidden"></div>
     </div>`;
 }
 
-// Atualiza donos, construções, hipotecas e posição dos peões
-function updateBoardDOM(el, state) {
+// Pontos de cada face do dado numa grade 3x3 (posições 1–9)
+const DIE_PIPS = { 1: [5], 2: [1, 9], 3: [1, 5, 9], 4: [1, 3, 7, 9], 5: [1, 3, 5, 7, 9], 6: [1, 3, 4, 6, 7, 9] };
+function dieFaceHTML(n) {
+  return Array.from({ length: 9 }, (_, i) => `<span class="pip${DIE_PIPS[n].includes(i + 1) ? ' on' : ''}"></span>`).join('');
+}
+
+/**
+ * Atualiza donos, construções, hipotecas e posição dos peões.
+ * shownPos permite desenhar um peão numa casa intermediária durante a animação.
+ */
+function updateBoardDOM(el, state, shownPos = {}, movingId = null) {
   const colorOf = {};
   state.players.forEach(p => { colorOf[p.id] = p.corPeao; });
   state.board.tiles.forEach((t, i) => {
@@ -192,12 +202,14 @@ function updateBoardDOM(el, state) {
   // Peões: posicionados em coordenadas absolutas relativas à célula
   const onTile = {};
   state.players.filter(p => !p.bancarroto).forEach(p => {
-    const k = (onTile[p.posicao] = (onTile[p.posicao] || 0) + 1) - 1;
-    const box = el.querySelector(`[data-tile="${p.posicao}"] .tile-tokens`);
+    const pos = shownPos[p.id] ?? p.posicao;
+    const k = (onTile[pos] = (onTile[pos] || 0) + 1) - 1;
+    const box = el.querySelector(`[data-tile="${pos}"] .tile-tokens`);
     if (!box) return;
     const tok = document.createElement('span');
-    tok.className = 'token' + (state.turnos[state.turnoAtual] === p.id ? ' token-active' : '') + (p.conectado ? '' : ' token-away');
-    tok.style.background = p.corPeao;
+    tok.className = 'token' + (state.turnos[state.turnoAtual] === p.id && state.phase !== 'order' ? ' token-active' : '')
+      + (p.conectado ? '' : ' token-away') + (p.id === movingId ? ' token-hop' : '');
+    tok.style.setProperty('--pc', p.corPeao);
     tok.style.left = (6 + (k % 4) * 23) + '%';
     tok.style.top = (8 + Math.floor(k / 4) * 42) + '%';
     tok.textContent = p.nome.charAt(0).toUpperCase();

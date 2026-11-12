@@ -160,15 +160,56 @@ function createGame(lobby, timeLimitMin = 45) {
     seq: 0, hostId: null, board, players,
     turnos: players.map(p => p.id),   // fila cíclica de turnos
     turnoAtual: 0,                    // índice em turnos[]
-    phase: 'roll',                    // roll | moving | buy | debt | end | gameover
+    phase: 'order',                   // order | roll | moving | buy | debt | end | gameover
+    orderRolls: {},                   // id → somas tiradas no sorteio da ordem (uma por rodada de desempate)
+    orderPending: players.map(p => p.id),
     dice: [1, 1], rollSeq: 0, doublesCount: 0, extraRoll: false,
     pendingBuy: null, debt: null, lastCard: null, winnerId: null,
+    anim: { seq: 0, moves: [] },      // movimentos da última ação, para a animação casa a casa
     decks: { chance: shuffle([...CARDS.chance.keys()]), community: shuffle([...CARDS.community.keys()]) },
     log: [], startedAt: now, endsAt: timeLimitMin > 0 ? now + timeLimitMin * 60000 : null, phaseSince: now,
   };
   log(s, `Partida iniciada com ${players.length} jogadores — tabuleiro de ${board.size} casas e ${board.sets} conjuntos.`);
-  startTurn(s);
+  log(s, '🎲 Todos rolam os dados: quem tirar mais começa.');
   return s;
+}
+
+/* ------------------------------ Sorteio da ordem ------------------------------ */
+function rollOrder(s, p) {
+  if (s.phase !== 'order' || !s.orderPending.includes(p.id)) return 'Você já rolou para o sorteio da ordem.';
+  const d = [d6(), d6()];
+  s.dice = d;
+  s.rollSeq++;
+  (s.orderRolls[p.id] = s.orderRolls[p.id] || []).push(d[0] + d[1]);
+  s.orderPending = s.orderPending.filter(id => id !== p.id);
+  log(s, `🎲 ${p.nome} tirou ${d[0]} + ${d[1]} = ${d[0] + d[1]} no sorteio da ordem.`);
+  if (!s.orderPending.length) resolveOrder(s);
+  return null;
+}
+
+// Ordena pelos resultados; quem empatou (mesmo histórico de rolagens) rola de novo
+function resolveOrder(s) {
+  const key = id => JSON.stringify(s.orderRolls[id]);
+  const groups = {};
+  s.turnos.forEach(id => { (groups[key(id)] = groups[key(id)] || []).push(id); });
+  const tied = Object.values(groups).filter(g => g.length > 1).flat();
+  if (tied.length) {
+    s.orderPending = tied;
+    log(s, `Empate entre ${tied.map(id => pById(s, id).nome).join(', ')} — rolem de novo.`);
+    return;
+  }
+  const cmp = (a, b) => {
+    const ra = s.orderRolls[a], rb = s.orderRolls[b];
+    for (let i = 0; i < Math.max(ra.length, rb.length); i++) {
+      const d = (rb[i] ?? -1) - (ra[i] ?? -1);
+      if (d) return d;
+    }
+    return 0;
+  };
+  s.turnos.sort(cmp);
+  s.turnoAtual = 0;
+  log(s, `📋 Ordem definida: ${s.turnos.map(id => pById(s, id).nome).join(' → ')}.`);
+  startTurn(s);
 }
 
 /* ------------------------------ Turnos ------------------------------ */
@@ -194,6 +235,13 @@ function finish(s) { s.phase = s.extraRoll ? 'roll' : 'end'; }
 function removeFromTurns(s, id) {
   const i = s.turnos.indexOf(id);
   if (i < 0) return;
+  if (s.phase === 'order') {
+    s.turnos.splice(i, 1);
+    s.orderPending = s.orderPending.filter(x => x !== id);
+    delete s.orderRolls[id];
+    if (!checkWinner(s) && !s.orderPending.length) resolveOrder(s);
+    return;
+  }
   const wasCurrent = i === s.turnoAtual;
   s.turnos.splice(i, 1);
   if (i < s.turnoAtual) s.turnoAtual--;
@@ -221,7 +269,11 @@ function endByTime(s) {
 }
 
 /* ------------------------------ Movimento e casas ------------------------------ */
+// Cada ação começa uma nova lista de movimentos para os clientes animarem
+function newAnim(s) { s.anim = { seq: (s.anim ? s.anim.seq : 0) + 1, moves: [] }; }
+
 function sendToJail(s, p) {
+  s.anim.moves.push({ playerId: p.id, to: s.board.jailIndex, jump: true });
   p.posicao = s.board.jailIndex;
   p.preso = true;
   p.turnosPreso = 0;
@@ -231,6 +283,7 @@ function sendToJail(s, p) {
 }
 
 function moveBy(s, p, steps) {
+  s.anim.moves.push({ playerId: p.id, from: p.posicao, steps });
   if (p.mover(steps, s.board.size)) {
     p.receberSalario(s.board.salary);
     log(s, `${p.nome} passou pelo Início e recebeu ${fmt(s.board.salary)}.`);
@@ -421,6 +474,9 @@ function applyAction(s, playerId, action, data = {}) {
   if (s.phase === 'gameover') return 'A partida terminou.';
   const p = pById(s, playerId);
   if (!p || p.bancarroto) return 'Jogador inválido.';
+  newAnim(s);
+  if (action === 'rollOrder') return rollOrder(s, p);
+  if (s.phase === 'order') return 'Aguarde o sorteio da ordem terminar.';
   if (currentPlayer(s) !== p) return 'Aguarde a sua vez.';
   const t = Number.isInteger(data.idx) ? tileAt(s, data.idx) : null;
   const mineOk = t && t.owner === p.id;
@@ -543,9 +599,24 @@ function tick(s, now = Date.now()) {
     }
   }
   if (s.endsAt && now >= s.endsAt) { endByTime(s); return true; }
-  const p = currentPlayer(s);
   const idle = now - s.phaseSince;
-  if ((!p.conectado && idle > AWAY_SKIP_MS) || idle > TURN_TIMEOUT_MS) {
+  const late = p => (!p.conectado && idle > AWAY_SKIP_MS) || idle > TURN_TIMEOUT_MS;
+  if (s.phase === 'order') {
+    // Sorteio da ordem: rola automaticamente por quem está ausente ou inativo
+    const auto = s.orderPending.map(id => pById(s, id)).filter(late);
+    if (!auto.length) return changed;
+    newAnim(s);
+    for (const p of auto) {
+      if (s.phase !== 'order' || !s.orderPending.includes(p.id)) continue;
+      log(s, `⏱ Rolagem automática para ${p.nome}.`);
+      rollOrder(s, p);
+    }
+    s.phaseSince = now;
+    return true;
+  }
+  const p = currentPlayer(s);
+  if (late(p)) {
+    newAnim(s);
     autoPlay(s, p);
     s.phaseSince = now;
     changed = true;
@@ -603,6 +674,13 @@ const UI = {
   },
 
   /* ---------- Jogo ---------- */
+  shownPos: {},         // casa desenhada de cada peão durante a animação (difere da posição real)
+  animQueue: [],
+  animating: false,
+  lastAnimSeq: null,
+  prevSaldo: {},
+  _wasOrder: false,
+
   render(s) {
     this.state = s;
     this.show('game');
@@ -610,62 +688,168 @@ const UI = {
     if (this.builtSeq !== s.startedAt) {
       buildBoardDOM(board, s.board);
       this.builtSeq = s.startedAt;
+      this.lastAnimSeq = s.anim ? s.anim.seq : null;   // não reanima o que aconteceu antes de entrar
+      this.shownPos = {};
       this.fitBoard();
     }
-    updateBoardDOM(board, s);
+    const rolled = this.lastRollSeq !== -1 && s.rollSeq !== this.lastRollSeq;
+    this.renderDice(s);
+    // Movimentos novos: os peões andam casa a casa antes de o resultado aparecer
+    if (s.anim && s.anim.seq !== this.lastAnimSeq) {
+      this.lastAnimSeq = s.anim.seq;
+      if (s.anim.moves.length) {
+        for (const m of s.anim.moves) if (!m.jump && this.shownPos[m.playerId] === undefined) this.shownPos[m.playerId] = m.from;
+        this.animQueue.push({ moves: s.anim.moves, delay: rolled ? 650 : 0 });
+        this.runAnim();
+      }
+    }
+    if (this.animating) {
+      updateBoardDOM(board, s, this.shownPos, this._movingId);
+      document.querySelectorAll('#turn-panel [data-act], #bottom-bar [data-act]').forEach(b => { b.disabled = true; });
+      return;
+    }
+    this.shownPos = {};
+    this.renderFull(s);
+  },
+
+  // Executa a fila de movimentos, um passo por casa
+  async runAnim() {
+    if (this.animating) return;
+    this.animating = true;
+    const board = this.$('board');
+    const wait = ms => new Promise(r => setTimeout(r, document.hidden ? 0 : ms));   // aba em segundo plano: sem animação
+    while (this.animQueue.length) {
+      const { moves, delay } = this.animQueue.shift();
+      if (delay) await wait(delay);
+      for (const m of moves) {
+        const N = this.state.board.size;
+        this._movingId = m.playerId;
+        if (m.jump) {
+          this.shownPos[m.playerId] = m.to;
+          updateBoardDOM(board, this.state, this.shownPos, m.playerId);
+          this.pulseTile(m.to);
+          await wait(450);
+          continue;
+        }
+        const dir = Math.sign(m.steps);
+        for (let k = 1; k <= Math.abs(m.steps); k++) {
+          this.shownPos[m.playerId] = ((m.from + dir * k) % N + N) % N;
+          updateBoardDOM(board, this.state, this.shownPos, m.playerId);
+          if (window.innerWidth < 768) this.focusTile(this.shownPos[m.playerId]);
+          await wait(170);
+        }
+        this.pulseTile(this.shownPos[m.playerId]);
+        await wait(300);
+      }
+    }
+    this._movingId = null;
+    this.animating = false;
+    this.render(this.state);
+  },
+
+  pulseTile(i) {
+    const el = document.querySelector(`[data-tile="${i}"]`);
+    if (!el) return;
+    el.classList.remove('landed');
+    void el.offsetWidth;
+    el.classList.add('landed');
+  },
+
+  banner(msg) {
+    const el = this.$('banner');
+    el.textContent = msg;
+    el.classList.remove('show');
+    void el.offsetWidth;
+    el.classList.add('show');
+    clearTimeout(this._bannerT);
+    this._bannerT = setTimeout(() => el.classList.remove('show'), 1600);
+  },
+
+  renderFull(s) {
+    updateBoardDOM(this.$('board'), s);
     const me = pById(s, this.myId);
-    const cur = currentPlayer(s);
-    const myTurn = !!me && cur && cur.id === me.id && s.phase !== 'gameover';
+    const cur = s.phase === 'order' ? null : currentPlayer(s);
+    const myTurn = !!me && !!cur && cur.id === me.id && s.phase !== 'gameover';
 
     this.$('g-room').textContent = Net.roomCode || '';
-    this.$('center-turn').innerHTML = cur && s.phase !== 'gameover'
-      ? `Vez de <b style="color:${esc(cur.corPeao)}">${esc(cur.nome)}</b>` : '';
-    this.renderDice(s);
+    this.$('center-turn').innerHTML = s.phase === 'order' ? '🎲 Sorteio da ordem de jogada'
+      : s.phase === 'gameover' ? '🏆 Fim de jogo'
+      : cur ? `<span class="turn-dot" style="background:${esc(cur.corPeao)}"></span>Vez de <b>${esc(cur.nome)}</b>` : '';
+    this.renderOrder(s);
     this.renderCard(s);
     this.renderSidebar(s, me, cur, myTurn);
     this.renderLog(s);
     this.renderModals(s, me, myTurn);
+    this._wasOrder = s.phase === 'order';
 
     // Aviso de troca de turno ("fim de turno")
     if (cur && cur.id !== this.lastTurnId) {
       this.lastTurnId = cur.id;
-      if (myTurn) this.toast('🎲 Sua vez!', 1800);
+      if (myTurn) this.banner('🎲 Sua vez!');
       if (window.innerWidth < 768) this.focusTile(cur.posicao);
     }
   },
 
   renderDice(s) {
-    const faces = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
-    const el = this.$('dice');
-    if (!el) return;
-    if (s.rollSeq === this.lastRollSeq) { el.textContent = faces[s.dice[0]] + ' ' + faces[s.dice[1]]; return; }
-    const first = this.lastRollSeq === -1;
+    const tray = this.$('dice');
+    if (!tray) return;
+    const dies = tray.querySelectorAll('.die');
+    const setFaces = (a, b) => { dies[0].innerHTML = dieFaceHTML(a); dies[1].innerHTML = dieFaceHTML(b); };
+    if (this.lastRollSeq === -1 || s.rollSeq === this.lastRollSeq) {
+      this.lastRollSeq = s.rollSeq;
+      if (!this._diceT) setFaces(s.dice[0], s.dice[1]);
+      return;
+    }
     this.lastRollSeq = s.rollSeq;
-    if (first || s.rollSeq === 0) { el.textContent = faces[s.dice[0]] + ' ' + faces[s.dice[1]]; return; }
-    // Animação simples: troca faces aleatórias antes do resultado
-    let n = 0;
-    el.classList.add('rolling');
+    const final = [...s.dice];
     clearInterval(this._diceT);
+    this._diceT = null;
+    tray.classList.remove('doubles');
+    if (document.hidden) { setFaces(final[0], final[1]); return; }
+    // Animação: os dados giram trocando de face antes de parar no resultado
+    let n = 0;
+    tray.classList.add('rolling');
     this._diceT = setInterval(() => {
-      el.textContent = faces[d6()] + ' ' + faces[d6()];
+      setFaces(d6(), d6());
       if (++n >= 8) {
         clearInterval(this._diceT);
-        el.classList.remove('rolling');
-        el.textContent = faces[this.state.dice[0]] + ' ' + faces[this.state.dice[1]];
+        this._diceT = null;
+        tray.classList.remove('rolling');
+        setFaces(final[0], final[1]);
+        tray.classList.toggle('doubles', final[0] === final[1]);
       }
-    }, 70);
+    }, 75);
+  },
+
+  // Resultados do sorteio da ordem, no centro do tabuleiro
+  renderOrder(s) {
+    const el = this.$('center-order');
+    if (!el) return;
+    el.classList.toggle('hidden', s.phase !== 'order');
+    if (s.phase !== 'order') return;
+    el.innerHTML = s.turnos.map(id => pById(s, id)).map(p => {
+      const r = s.orderRolls[p.id] || [];
+      const pending = s.orderPending.includes(p.id);
+      return `<div class="order-row">
+        <span class="token-static" style="background:${esc(p.corPeao)}">${esc(p.nome.charAt(0).toUpperCase())}</span>
+        <span class="order-name">${esc(p.nome)}</span>
+        <b class="order-roll">${r.length ? r.join(' · ') : '–'}</b>
+        <span class="order-state">${pending ? '⏳' : '✔'}</span>
+      </div>`;
+    }).join('');
   },
 
   renderCard(s) {
     const el = this.$('center-card');
     if (!el || !s.lastCard) return;
     el.classList.remove('hidden');
-    el.innerHTML = `<b>${DECK_LABEL[s.lastCard.deck]}</b><br>${esc(s.lastCard.text)}`;
+    el.innerHTML = `<b>${s.lastCard.deck === 'chance' ? '❓' : '🎁'} ${DECK_LABEL[s.lastCard.deck]}</b><br>${esc(s.lastCard.text)}`;
   },
 
   actionButtons(s, me, myTurn) {
-    if (!myTurn) return '';
     const btn = (act, label, cls = 'btn-primary', dis = false) => `<button class="btn ${cls}" data-act="${act}" ${dis ? 'disabled' : ''}>${label}</button>`;
+    if (s.phase === 'order') return me && s.orderPending.includes(me.id) ? btn('rollOrder', '🎲 Rolar para definir a ordem') : '';
+    if (!myTurn) return '';
     switch (s.phase) {
       case 'roll':
         if (me.preso) {
@@ -687,38 +871,61 @@ const UI = {
 
   renderSidebar(s, me, cur, myTurn) {
     const actions = this.actionButtons(s, me, myTurn);
-    const waiting = s.phase === 'gameover' ? '<p class="text-amber-300">Partida encerrada.</p>'
-      : (!myTurn && cur ? `<p class="text-slate-400">Aguardando <b style="color:${esc(cur.corPeao)}">${esc(cur.nome)}</b>…</p>` : '');
+    let waiting = '';
+    if (s.phase === 'gameover') waiting = '<p class="text-amber-300">Partida encerrada.</p>';
+    else if (s.phase === 'order') waiting = actions ? '<p class="hint">Quem tirar mais nos dados começa. Empates rolam de novo.</p>' : '<p class="hint">Aguardando os outros rolarem…</p>';
+    else if (!myTurn && cur) waiting = `<p class="hint">Aguardando <b style="color:${esc(cur.corPeao)}">${esc(cur.nome)}</b>…</p>`;
+    this.$('turn-title').textContent = s.phase === 'order' ? 'Sorteio da ordem' : myTurn ? 'Sua vez!' : 'Jogada';
     this.$('turn-panel').innerHTML = `<div class="flex flex-wrap gap-2">${actions}</div>${waiting}`;
     this.$('bottom-bar').innerHTML = me
-      ? `<span class="font-bold">${fmt(me.saldo)}</span><div class="flex gap-2">${actions || waiting}</div>` : '';
+      ? `<span class="bottom-money" style="--pc:${esc(me.corPeao)}">${fmt(me.saldo)}</span><div class="flex gap-2">${actions || waiting}</div>` : '';
 
     // Painel do jogador local: saldo e propriedades
     if (me) {
       const props = me.propriedades.map(i => tileAt(s, i)).sort((a, b) => a.id - b.id);
       this.$('me-panel').innerHTML = `
-        <div class="flex items-center gap-2 mb-1">
-          <span class="token-static" style="background:${esc(me.corPeao)}">${esc(me.nome.charAt(0).toUpperCase())}</span>
-          <b>${esc(me.nome)}</b>${me.bancarroto ? ' <span class="text-red-400">(falido)</span>' : ''}${me.preso ? ' 🔒' : ''}
+        <div class="wallet" style="--pc:${esc(me.corPeao)}">
+          <div class="flex items-center gap-2">
+            <span class="token-static" style="background:${esc(me.corPeao)}">${esc(me.nome.charAt(0).toUpperCase())}</span>
+            <b class="truncate">${esc(me.nome)}</b>${me.bancarroto ? ' <span class="text-red-300">(falido)</span>' : ''}${me.preso ? ' 🔒' : ''}
+          </div>
+          <div class="wallet-money">${fmt(me.saldo)}</div>
+          <div class="text-xs opacity-80">Patrimônio ${fmt(netWorth(s, me))}${me.cartasSaida ? ` · 🎫 Habeas Corpus ×${me.cartasSaida}` : ''}</div>
         </div>
-        <div class="text-2xl font-bold text-emerald-400">${fmt(me.saldo)}</div>
-        <div class="text-xs text-slate-400 mb-2">Patrimônio: ${fmt(netWorth(s, me))}${me.cartasSaida ? ` · Habeas Corpus: ${me.cartasSaida}` : ''}</div>
-        <div class="space-y-1">${props.length ? props.map(t => `
+        <div class="space-y-1 mt-2">${props.length ? props.map(t => `
           <button class="prop-row" data-open="${t.id}">
             <span class="prop-swatch" style="background:${t.colorGroup ? s.board.groups[t.colorGroup].color : '#94a3b8'}"></span>
-            <span class="flex-1 text-left">${esc(t.name)}</span>
-            <span>${t.mortgage ? '🔻HIP' : (t.level === 5 ? '🏨' : '🏠'.repeat(t.level))}</span>
-          </button>`).join('') : '<p class="text-slate-500 text-sm">Nenhuma propriedade ainda.</p>'}</div>`;
+            <span class="flex-1 text-left truncate">${esc(t.name)}</span>
+            <span class="text-xs">${t.mortgage ? '<span class="text-red-400">HIPOTECADA</span>' : (t.level === 5 ? '🏨' : '🏠'.repeat(t.level))}</span>
+          </button>`).join('') : '<p class="hint">Nenhuma propriedade ainda.</p>'}</div>`;
     }
 
-    // Todos os jogadores, na ordem dos turnos
-    this.$('players-panel').innerHTML = s.players.map(p => `
-      <div class="flex items-center gap-2 py-1 ${p.bancarroto ? 'opacity-40 line-through' : ''}">
-        <span class="token-static ${cur && cur.id === p.id ? 'ring-2 ring-white' : ''}" style="background:${esc(p.corPeao)}">${esc(p.nome.charAt(0).toUpperCase())}</span>
-        <span class="flex-1 truncate">${esc(p.nome)}${p.conectado ? '' : ' <span title="desconectado">📴</span>'}${p.preso ? ' 🔒' : ''}</span>
-        <span class="text-sm">${fmt(p.saldo)}</span>
-        <span class="text-xs text-slate-400">${p.propriedades.length}🏷️</span>
+    // Jogadores na ordem dos turnos (falidos por último)
+    const ordered = [...s.turnos.map(id => pById(s, id)), ...s.players.filter(p => !s.turnos.includes(p.id))];
+    const panel = this.$('players-panel');
+    panel.innerHTML = ordered.map((p, i) => `
+      <div class="player-card ${cur && cur.id === p.id ? 'is-turn' : ''} ${p.bancarroto ? 'is-out' : ''}" style="--pc:${esc(p.corPeao)}" data-pid="${esc(p.id)}">
+        <span class="player-pos">${p.bancarroto ? '💀' : (s.phase === 'order' ? '' : i + 1)}</span>
+        <span class="token-static" style="background:${esc(p.corPeao)}">${esc(p.nome.charAt(0).toUpperCase())}</span>
+        <div class="flex-1 min-w-0">
+          <div class="truncate font-semibold">${esc(p.nome)}${p.id === this.myId ? ' <span class="you">você</span>' : ''}${p.conectado ? '' : ' <span title="desconectado">📴</span>'}${p.preso ? ' 🔒' : ''}</div>
+          <div class="text-xs text-slate-400">${p.bancarroto ? 'falido' : `${p.propriedades.length} propriedade${p.propriedades.length === 1 ? '' : 's'}`}</div>
+        </div>
+        <span class="player-money">${fmt(p.saldo)}</span>
       </div>`).join('');
+    // Dinheiro que entrou ou saiu desde a última atualização
+    for (const p of s.players) {
+      const prev = this.prevSaldo[p.id];
+      this.prevSaldo[p.id] = p.saldo;
+      if (prev === undefined || prev === p.saldo) continue;
+      const row = [...panel.querySelectorAll('[data-pid]')].find(r => r.dataset.pid === p.id);
+      if (!row) continue;
+      const f = document.createElement('span');
+      f.className = 'money-float ' + (p.saldo > prev ? 'up' : 'down');
+      f.textContent = (p.saldo > prev ? '+' : '−') + fmt(Math.abs(p.saldo - prev));
+      row.appendChild(f);
+      setTimeout(() => f.remove(), 1800);
+    }
   },
 
   renderLog(s) {
@@ -802,6 +1009,18 @@ const UI = {
     // Modal obrigatório deixou de valer: fecha
     if (['buy', 'debt', 'gameover'].includes(this.modalKind)) this.closeModal();
 
+    // Sorteio da ordem acabou de terminar: mostra o resultado a todos
+    if (this._wasOrder && s.phase !== 'order') {
+      this.openModal('card', `<h2 class="text-xl font-bold mb-3">📋 Ordem de jogada</h2>
+        <ol class="space-y-2 mb-4">${s.turnos.map((id, i) => {
+          const p = pById(s, id);
+          return `<li class="order-row"><span class="player-pos">${i + 1}º</span>
+            <span class="token-static" style="background:${esc(p.corPeao)}">${esc(p.nome.charAt(0).toUpperCase())}</span>
+            <span class="order-name">${esc(p.nome)}</span><b class="order-roll">${(s.orderRolls[id] || []).join(' · ')}</b></li>`;
+        }).join('')}</ol>
+        <button class="btn btn-primary w-full" data-close>Começar!</button>`);
+    }
+
     // Carta tirada (mostrada a todos)
     if (s.lastCard && s.lastCard.seq !== this.lastCardSeq) {
       const firstRender = this.lastCardSeq === 0 && this.lastRollSeq === s.rollSeq && !this._seenAny;
@@ -843,7 +1062,7 @@ const UI = {
     if (!s || i === null || i === undefined) return;
     const t = tileAt(s, i);
     const me = pById(s, this.myId);
-    const myTurn = me && currentPlayer(s) === me && s.phase !== 'gameover';
+    const myTurn = me && currentPlayer(s) === me && !['gameover', 'order'].includes(s.phase);
     let ctrl = '';
     if (me && t.owner === me.id) {
       const b = (act, label, dis) => `<button class="btn btn-secondary" data-act="${act}" data-idx="${t.id}" ${dis || !myTurn ? 'disabled' : ''}>${label}</button>`;
@@ -864,7 +1083,7 @@ const UI = {
   fitBoard() {
     const s = this.state, wrap = this.$('board-wrap');
     if (!s || !wrap) return;
-    const units = s.board.side + 2 * 1.6;             // cantos valem 1,6 casa
+    const units = s.board.side + 2 * 1.6 + 2 * 0.18;  // cantos valem 1,6 casa; moldura 0,18 casa de cada lado
     const chrome = 12 + 2 * (s.board.side + 1) + 4;   // padding + gaps do grid + folga
     const fit = (Math.min(wrap.clientWidth, wrap.clientHeight || wrap.clientWidth) - chrome) / units;
     const cell = Math.max(28, Math.floor(fit * this.zoom * 0.98));
