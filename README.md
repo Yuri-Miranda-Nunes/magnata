@@ -22,8 +22,9 @@ O diferencial é o **tabuleiro dinâmico**: ele cresce conforme o número de jog
 - Na sua vez, clique em **🎲 Rolar Dados**. O peão anda casa a casa a soma dos dois dados. **Dupla** dá direito a jogar de novo; três duplas seguidas mandam para a prisão.
 - **Propriedade livre:** abre um modal para comprar ou recusar.
 - **Propriedade de outro jogador:** você paga aluguel automaticamente. O valor sobe com casas e hotel; conjunto completo sem construções paga aluguel em dobro. Estações cobram pelo número de estações do dono; companhias cobram *dados × multiplicador*.
-- **Construir:** toque numa propriedade sua (no tabuleiro ou no painel). Só é possível construir se você tiver **todos os terrenos da mesma cor** e nenhum hipotecado. São até 4 casas + 1 hotel, e cada nível custa mais que o anterior.
-- **Hipoteca:** recebe metade do preço; quitar custa 55% do preço. Hipotecadas não cobram aluguel.
+- **Construir:** quando você **cai de novo numa propriedade sua**, pode construir uma casa nela (uma por vez que cair). São até 4 casas + 1 hotel, e cada nível custa mais que o anterior. Ter o **conjunto completo da cor** continua dobrando o aluguel das propriedades sem construções.
+- **Trocas:** na sua vez, clique em **🤝 Negociar**, escolha o jogador, marque as propriedades e o dinheiro de cada lado e envie. O outro jogador aceita ou recusa. Propriedades com casas não podem ser trocadas; as hipotecadas vão com a hipoteca. A proposta expira quando a vez passa.
+- **Hipoteca:** recebe metade do preço; quitar custa 55% do preço. Hipotecadas não cobram aluguel. Para hipotecar, venda antes as casas daquela propriedade.
 - **Sorte / Cofre Comunitário:** 16 cartas em cada baralho (andar, voltar, ir para o Início, receber ou pagar, prisão, turno extra, Habeas Corpus…).
 - **Prisão:** pague a fiança, use um Habeas Corpus ou tente tirar uma dupla. Na 3ª tentativa sem dupla, a fiança é paga automaticamente e você sai.
 - **Dívida:** se faltar dinheiro, venda construções ou hipoteque até conseguir pagar, ou declare falência. Se nem vendendo tudo der para pagar, a falência é automática. Os bens vão para o credor (ou voltam ao banco).
@@ -33,8 +34,9 @@ O diferencial é o **tabuleiro dinâmico**: ele cresce conforme o número de jog
 
 ### Quedas e reconexão
 - **Atualizou a página?** O jogo guarda a sessão no `localStorage` e reconecta sozinho à mesma partida.
-- **Um jogador caiu:** a vez dele é pulada e ele tem **90 s** para voltar. Depois disso, ele vai à falência e os bens voltam ao banco.
-- **O host caiu:** o jogador conectado mais antigo da sala (menor posição) vira o novo host automaticamente, com o último estado recebido, e os outros se reconectam a ele.
+- **Fechou a guia ou trocou de aparelho?** Abra o link da sala de novo e entre com o **mesmo nome**: você volta para o seu lugar, com seus bens.
+- **Um jogador caiu:** a vez dele é pulada e ele tem **3 minutos** para voltar (a contagem aparece ao lado do nome). Depois disso, ele vai à falência e os bens voltam ao banco.
+- **O host caiu:** o jogador conectado mais antigo da sala (menor posição) vira o novo host automaticamente, com o último estado recebido, e os outros se reconectam a ele. Antes de assumir, ele confere se o host antigo não está só com a guia em segundo plano. Se o antigo reaparecer, a liderança volta para ele.
 
 ## Arquitetura
 

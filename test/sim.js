@@ -9,7 +9,7 @@ const assert = require('assert');
 // Carrega board.js + game.js no mesmo contexto global, como no navegador
 const ctx = vm.createContext({ console, Date, Math });
 for (const f of ['board.js', 'game.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), ctx, { filename: f });
-const G = vm.runInContext('({ generateBoard, createGame, applyAction, tick, currentPlayer, pById, buildCost, autoLiquidate, RECONNECT_GRACE_MS, CARDS, drawCard, bankrupt, newAnim })', ctx);
+const G = vm.runInContext('({ generateBoard, createGame, applyAction, tick, currentPlayer, pById, buildCost, autoLiquidate, RECONNECT_GRACE_MS, CARDS, drawCard, bankrupt, newAnim, land, renameId })', ctx);
 
 function checkInvariants(s) {
   for (const t of s.board.tiles) {
@@ -42,14 +42,12 @@ function botTurn(s) {
     case 'debt':
       G.autoLiquidate(s, p, s.debt.amount);
       return act('payDebt') ? act('bankrupt') : null;
-    case 'end': {
-      // tenta construir no terreno mais barato possível
-      for (const i of [...p.propriedades]) {
-        const t = s.board.tiles[i];
-        if (t.type === 'property' && t.level < 5 && p.saldo - G.buildCost(t) > reserve) act('build', { idx: i });
-      }
-      return act('endTurn');
+    case 'build': {
+      const t = s.board.tiles[s.pendingBuild];
+      return act(p.saldo - G.buildCost(t) > reserve ? 'build' : 'skipBuild');
     }
+    case 'end':
+      return act('endTurn');
   }
   throw new Error('fase inesperada ' + s.phase);
 }
@@ -107,7 +105,7 @@ for (const n of [2, 4, 6, 8]) {
   assert(!G.tick(s, Date.now() + 3000), 'não deveria pular a vez logo após a queda (refresh)');
   assert(G.tick(s, Date.now() + 12000), 'deveria pular a vez do desconectado');
   assert.notStrictEqual(G.currentPlayer(s).id, p0.id);
-  G.tick(s, Date.now() + G.RECONNECT_GRACE_MS + 5000);
+  for (let t = 60000; t <= G.RECONNECT_GRACE_MS + 60000; t += 60000) G.tick(s, Date.now() + 12000 + t);   // host conta o tempo fora a cada tick
   assert(p0.bancarroto && !s.turnos.includes(p0.id), 'desconectado deveria falir após o prazo');
   checkInvariants(s);
   // limite de tempo encerra a partida
@@ -212,6 +210,80 @@ const started = n => {
   assert.strictEqual(G.applyAction(s, p.id, 'useJailCard'), null);
   assert.strictEqual(s.jailCardOut.chance, null, 'ao usar, a carta é liberada');
   console.log('✔ Habeas Corpus fora do baralho enquanto guardado');
+}
+
+// 10) Construção: só ao cair de novo na própria propriedade
+{
+  const s = started(2);
+  const p = G.currentPlayer(s);
+  const t = s.board.tiles.find(x => x.type === 'property');
+  t.owner = p.id; p.propriedades.push(t.id);
+  assert(G.applyAction(s, p.id, 'build', { idx: t.id }), 'não pode construir fora da casa');
+  p.posicao = t.id; s.phase = 'moving'; G.newAnim(s);
+  G.land(s, p);
+  assert.strictEqual(s.phase, 'build');
+  const saldo = p.saldo;
+  assert.strictEqual(G.applyAction(s, p.id, 'build'), null);
+  assert.strictEqual(t.level, 1);
+  assert.strictEqual(p.saldo, saldo - G.buildCost(t, 0));
+  assert(G.applyAction(s, p.id, 'build'), 'só um nível por vez que cai');
+  // hipotecada: não oferece construção; com casas: não pode hipotecar
+  assert(G.applyAction(s, p.id, 'mortgage', { idx: t.id }), 'não pode hipotecar com casa');
+  s.phase = 'end';
+  t.level = 0; t.mortgage = true; s.phase = 'moving'; G.land(s, p);
+  assert.notStrictEqual(s.phase, 'build');
+  checkInvariants(s);
+  console.log('✔ construção ao cair de novo na própria propriedade');
+}
+
+// 11) Trocas entre jogadores
+{
+  const s = started(3);
+  const [a, b, c] = s.turnos.map(id => G.pById(s, id));
+  const props = s.board.tiles.filter(x => x.type === 'property');
+  const ta = props[0], tb = props[1];
+  ta.owner = a.id; a.propriedades.push(ta.id);
+  tb.owner = b.id; b.propriedades.push(tb.id);
+  assert(G.applyAction(s, b.id, 'proposeTrade', { to: a.id, give: [tb.id] }), 'só o jogador da vez propõe');
+  assert(G.applyAction(s, a.id, 'proposeTrade', { to: b.id, give: [tb.id] }), 'não pode dar o que não é seu');
+  assert(G.applyAction(s, a.id, 'proposeTrade', { to: b.id, giveMoney: 1e9 }), 'não pode dar dinheiro que não tem');
+  assert(G.applyAction(s, a.id, 'proposeTrade', { to: b.id }), 'proposta vazia');
+  assert.strictEqual(G.applyAction(s, a.id, 'proposeTrade', { to: b.id, give: [ta.id], get: [tb.id], giveMoney: 500, getMoney: 0 }), null);
+  assert(G.applyAction(s, c.id, 'acceptTrade'), 'só o destinatário aceita');
+  const sa = a.saldo, sb = b.saldo;
+  assert.strictEqual(G.applyAction(s, b.id, 'acceptTrade'), null);
+  assert.strictEqual(ta.owner, b.id); assert.strictEqual(tb.owner, a.id);
+  assert.strictEqual(a.saldo, sa - 500); assert.strictEqual(b.saldo, sb + 500);
+  assert.strictEqual(s.trade, null);
+  checkInvariants(s);
+  // com construção não troca; recusa e expiração
+  tb.level = 1;
+  assert(G.applyAction(s, a.id, 'proposeTrade', { to: b.id, give: [tb.id] }), 'com casas não troca');
+  tb.level = 0;
+  assert.strictEqual(G.applyAction(s, a.id, 'proposeTrade', { to: c.id, give: [tb.id] }), null);
+  assert.strictEqual(G.applyAction(s, c.id, 'rejectTrade'), null);
+  assert.strictEqual(tb.owner, a.id);
+  assert.strictEqual(G.applyAction(s, a.id, 'proposeTrade', { to: c.id, give: [tb.id] }), null);
+  s.phase = 'end';
+  G.applyAction(s, a.id, 'endTurn');
+  assert.strictEqual(s.trade, null, 'proposta expira ao passar a vez');
+  console.log('✔ trocas: validação, aceitar, recusar e expirar');
+}
+
+// 12) Volta à partida com outro id (outra guia/aparelho): todas as referências passam ao id novo
+{
+  let s = started(3);
+  const b = G.pById(s, s.turnos[1]);
+  const t = s.board.tiles.find(x => x.type === 'property');
+  t.owner = b.id; b.propriedades.push(t.id);
+  const old = b.id;
+  s = G.renameId(s, old, 'novo-id');
+  assert(!JSON.stringify(s).includes(JSON.stringify(old)), 'id antigo não pode sobrar');
+  assert.strictEqual(s.board.tiles[t.id].owner, 'novo-id');
+  assert(s.turnos.includes('novo-id'));
+  assert(G.pById(s, 'novo-id').mover, 'jogador continua sendo instância de Player');
+  checkInvariants(s);
+  console.log('✔ volta à partida com id novo');
 }
 
 // 6) Ações fora da vez são recusadas

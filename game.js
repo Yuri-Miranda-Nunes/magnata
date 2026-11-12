@@ -7,7 +7,7 @@
 
 const TURN_TIMEOUT_MS = 60000;     // jogador conectado e inativo: ação automática
 const AWAY_SKIP_MS = 10000;        // jogador desconectado: pula a vez (dá tempo de um refresh voltar)
-const RECONNECT_GRACE_MS = 90000;  // tempo para voltar após queda antes de falir
+const RECONNECT_GRACE_MS = 180000; // tempo para voltar após queda antes de falir
 const LOG_MAX = 80;
 const MAX_JAIL_TURNS = 3;
 
@@ -125,6 +125,13 @@ function log(s, msg) {
   if (s.log.length > LOG_MAX) s.log.shift();
 }
 
+// Troca o id de um jogador em todo o estado (volta à partida por outra aba ou aparelho).
+// Os ids são strings únicas entre aspas no JSON, então a troca exata do token é segura.
+function renameId(s, oldId, newId) {
+  const json = JSON.stringify(s).split(JSON.stringify(oldId)).join(JSON.stringify(newId));
+  return hydrate(JSON.parse(json));
+}
+
 // Recria as instâncias de Player depois de receber o estado pela rede (JSON)
 function hydrate(s) {
   if (s) s.players = s.players.map(p => (p instanceof Player ? p : new Player(p)));
@@ -170,7 +177,7 @@ function createGame(lobby, timeLimitMin = 45) {
     orderRolls: {},                   // id → somas tiradas no sorteio da ordem (uma por rodada de desempate)
     orderPending: players.map(p => p.id),
     dice: [1, 1], rollSeq: 0, doublesCount: 0, extraRoll: false,
-    pendingBuy: null, debt: null, lastCard: null, winnerId: null,
+    pendingBuy: null, pendingBuild: null, trade: null, debt: null, lastCard: null, winnerId: null,
     jailCardOut: { chance: null, community: null },   // quem guarda o Habeas Corpus de cada baralho
     anim: { seq: 0, moves: [] },      // movimentos da última ação, para a animação casa a casa
     decks: { chance: shuffle([...CARDS.chance.keys()]), community: shuffle([...CARDS.community.keys()]) },
@@ -226,7 +233,10 @@ function startTurn(s) {
   s.doublesCount = 0;
   s.extraRoll = false;
   s.pendingBuy = null;
+  s.pendingBuild = null;
   s.debt = null;
+  if (s.trade) log(s, 'A proposta de troca expirou.');
+  s.trade = null;
   s.phase = 'roll';
   s.phaseSince = Date.now();
   const p = currentPlayer(s);
@@ -305,7 +315,12 @@ function land(s, p) {
   log(s, `${p.nome} caiu em ${t.name}.`);
   if (t.type === 'property' || t.type === 'railroad' || t.type === 'utility') {
     if (t.owner === null) { s.pendingBuy = t.id; s.phase = 'buy'; return; }
-    if (t.owner === p.id || t.mortgage) return;
+    if (t.owner === p.id) {
+      // Caiu de novo na própria propriedade: pode construir um nível (casa → hotel)
+      if (t.type === 'property' && !t.mortgage && t.level < 5) { s.pendingBuild = t.id; s.phase = 'build'; }
+      return;
+    }
+    if (t.mortgage) return;
     const owner = pById(s, t.owner);
     const rent = calcRent(s, t);
     log(s, `${p.nome} deve ${fmt(rent)} de aluguel a ${owner.nome}.`);
@@ -386,7 +401,8 @@ function bankrupt(s, p, creditorId) {
     t.level = 0;
     if (cred) { t.owner = cred.id; cred.propriedades.push(i); } else { t.owner = null; t.mortgage = false; }
   }
-  if (wasCurrent) { s.debt = null; s.pendingBuy = null; }
+  if (wasCurrent) { s.debt = null; s.pendingBuy = null; s.pendingBuild = null; }
+  if (s.trade && (s.trade.from === p.id || s.trade.to === p.id)) s.trade = null;
   removeFromTurns(s, p.id);
 }
 
@@ -452,6 +468,82 @@ function drawCard(s, p, deck) {
   }
 }
 
+/* ------------------------------ Trocas entre jogadores ------------------------------ */
+const TRADABLE = ['property', 'railroad', 'utility'];
+
+// Normaliza a proposta vinda da rede (fronteira de confiança)
+function readTrade(fromId, d) {
+  const ints = a => (Array.isArray(a) ? [...new Set(a.filter(Number.isInteger))].slice(0, 64) : []);
+  const money = v => (Number.isFinite(+v) && +v > 0 ? Math.floor(+v) : 0);
+  return { from: fromId, to: String(d.to || ''), give: ints(d.give), get: ints(d.get), giveMoney: money(d.giveMoney), getMoney: money(d.getMoney) };
+}
+
+function tradeError(s, tr) {
+  const from = pById(s, tr.from), to = pById(s, tr.to);
+  if (!from || !to || from === to || from.bancarroto || to.bancarroto) return 'Escolha outro jogador para negociar.';
+  const ok = (ids, owner) => ids.every(i => {
+    const t = tileAt(s, i);
+    return t && TRADABLE.includes(t.type) && t.owner === owner.id && t.level === 0;
+  });
+  if (!ok(tr.give, from) || !ok(tr.get, to)) return 'Só dá para trocar propriedades do próprio dono e sem construções.';
+  if (!tr.give.length && !tr.get.length && !tr.giveMoney && !tr.getMoney) return 'A proposta está vazia.';
+  if (from.saldo < tr.giveMoney) return `${from.nome} não tem ${fmt(tr.giveMoney)}.`;
+  if (to.saldo < tr.getMoney) return `${to.nome} não tem ${fmt(tr.getMoney)}.`;
+  return null;
+}
+
+function doTrade(s, tr) {
+  const from = pById(s, tr.from), to = pById(s, tr.to);
+  const move = (ids, a, b) => ids.forEach(i => {
+    tileAt(s, i).owner = b.id;
+    a.propriedades = a.propriedades.filter(x => x !== i);
+    b.propriedades.push(i);
+  });
+  move(tr.give, from, to);
+  move(tr.get, to, from);
+  from.saldo += tr.getMoney - tr.giveMoney;
+  to.saldo += tr.giveMoney - tr.getMoney;
+  const desc = (ids, m) => [...ids.map(i => tileAt(s, i).name), ...(m ? [fmt(m)] : [])].join(', ') || 'nada';
+  log(s, `🤝 Troca: ${from.nome} deu ${desc(tr.give, tr.giveMoney)} e recebeu ${desc(tr.get, tr.getMoney)} de ${to.nome}.`);
+}
+
+// Ações de troca: o jogador da vez propõe; o outro aceita ou recusa (mesmo fora da vez dele)
+function tradeAction(s, p, action, data) {
+  const tr = s.trade;
+  switch (action) {
+    case 'proposeTrade': {
+      if (currentPlayer(s) !== p) return 'Só o jogador da vez pode propor trocas.';
+      if (!['roll', 'end', 'debt'].includes(s.phase)) return 'Termine a decisão atual antes de negociar.';
+      if (tr) return 'Já existe uma proposta aguardando resposta.';
+      const nt = readTrade(p.id, data);
+      const err = tradeError(s, nt);
+      if (err) return err;
+      s.trade = nt;
+      log(s, `🤝 ${p.nome} fez uma proposta de troca para ${pById(s, nt.to).nome}.`);
+      return null;
+    }
+    case 'cancelTrade':
+      if (!tr || tr.from !== p.id) return 'Não há proposta sua para cancelar.';
+      s.trade = null;
+      log(s, `${p.nome} cancelou a proposta de troca.`);
+      return null;
+    case 'rejectTrade':
+      if (!tr || tr.to !== p.id) return 'Não há proposta para você.';
+      s.trade = null;
+      log(s, `${p.nome} recusou a troca.`);
+      return null;
+    case 'acceptTrade': {
+      if (!tr || tr.to !== p.id) return 'Não há proposta para você.';
+      const err = tradeError(s, tr);
+      s.trade = null;
+      if (err) { log(s, `Troca cancelada: ${err}`); return null; }   // null: o cancelamento precisa ser transmitido
+      doTrade(s, tr);
+      return null;
+    }
+  }
+  return 'Ação desconhecida.';
+}
+
 /* ------------------------------ Ações dos jogadores ------------------------------ */
 function doRoll(s, p) {
   if (s.phase !== 'roll') return 'Não é hora de rolar os dados.';
@@ -499,6 +591,7 @@ function applyAction(s, playerId, action, data = {}) {
   newAnim(s);
   if (action === 'rollOrder') return rollOrder(s, p);
   if (s.phase === 'order') return 'Aguarde o sorteio da ordem terminar.';
+  if (action.endsWith('Trade')) return tradeAction(s, p, action, data);
   if (currentPlayer(s) !== p) return 'Aguarde a sua vez.';
   const t = Number.isInteger(data.idx) ? tileAt(s, data.idx) : null;
   const mineOk = t && t.owner === p.id;
@@ -527,16 +620,22 @@ function applyAction(s, playerId, action, data = {}) {
       return null;
 
     case 'build': {
-      if (!mineOk || t.type !== 'property') return 'Propriedade inválida.';
-      if (!ownsGroup(s, p.id, t.colorGroup)) return 'Você precisa de todos os terrenos desta cor.';
-      if (groupTiles(s, t.colorGroup).some(x => x.mortgage)) return 'Há terrenos hipotecados neste conjunto.';
-      if (t.level >= 5) return 'Já tem hotel (nível máximo).';
-      const c = buildCost(t);
+      if (s.phase !== 'build') return 'Para construir, caia de novo na sua propriedade.';
+      const b = tileAt(s, s.pendingBuild);
+      const c = buildCost(b);
       if (!p.pagar(c)) return 'Saldo insuficiente para construir.';
-      t.level++;
-      log(s, `🏗️ ${p.nome} construiu ${t.level === 5 ? 'um hotel' : 'uma casa'} em ${t.name} (${fmt(c)}).`);
+      b.level++;
+      log(s, `🏗️ ${p.nome} construiu ${b.level === 5 ? 'um hotel' : 'uma casa'} em ${b.name} (${fmt(c)}).`);
+      s.pendingBuild = null;
+      finish(s);
       return null;
     }
+
+    case 'skipBuild':
+      if (s.phase !== 'build') return 'Nada para construir agora.';
+      s.pendingBuild = null;
+      finish(s);
+      return null;
 
     case 'sell':
       if (!mineOk || t.level <= 0) return 'Não há construções para vender.';
@@ -545,7 +644,7 @@ function applyAction(s, playerId, action, data = {}) {
 
     case 'mortgage':
       if (!mineOk || t.mortgage) return 'Não é possível hipotecar.';
-      if (t.colorGroup && groupTiles(s, t.colorGroup).some(x => x.level > 0)) return 'Venda as construções do conjunto antes.';
+      if (t.level > 0) return 'Venda as construções desta propriedade antes.';
       mortgageTile(s, p, t);
       return null;
 
@@ -605,6 +704,7 @@ function autoPlay(s, p) {
   switch (s.phase) {
     case 'roll': if (away) nextTurn(s); else doRoll(s, p); break;
     case 'buy': applyAction(s, p.id, 'decline'); break;
+    case 'build': applyAction(s, p.id, 'skipBuild'); break;
     case 'debt':
       autoLiquidate(s, p, s.debt.amount);
       if (applyAction(s, p.id, 'payDebt')) bankrupt(s, p, s.debt.creditorId);
@@ -623,7 +723,9 @@ function tick(s, now = Date.now()) {
   s.elapsedMs = (s.elapsedMs || 0) + dt;
   for (const p of s.players) {
     if (p.bancarroto || p.conectado) continue;
-    p.ausenteMs = (p.ausenteMs || 0) + dt;
+    const antes = p.ausenteMs || 0;
+    p.ausenteMs = antes + dt;
+    if (Math.floor(antes / 5000) !== Math.floor(p.ausenteMs / 5000)) changed = true;   // atualiza a contagem na tela
     if (p.ausenteMs > RECONNECT_GRACE_MS) {
       log(s, `${p.nome} não voltou a tempo.`);
       bankrupt(s, p, null);
@@ -746,7 +848,8 @@ const UI = {
       document.querySelectorAll('#turn-panel [data-act], #bottom-bar [data-act]').forEach(b => { b.disabled = true; });
       // Compra/dívida que já não vale no host não pode continuar aberta durante a animação
       const mine = currentPlayer(s) && currentPlayer(s).id === this.myId;
-      if (['buy', 'debt'].includes(this.modalKind) && !(mine && s.phase === this.modalKind)) this.closeModal();
+      const still = { buy: mine && s.phase === 'buy', debt: mine && s.phase === 'debt', build: mine && s.phase === 'build', trade: !!(s.trade && s.trade.to === this.myId) };
+      if (this.modalKind in still && !still[this.modalKind]) this.closeModal();
       return;
     }
     this.shownPos = {};
@@ -904,21 +1007,29 @@ const UI = {
     const btn = (act, label, cls = 'btn-primary', dis = false) => `<button class="btn ${cls}" data-act="${act}" ${dis ? 'disabled' : ''}>${label}</button>`;
     if (s.phase === 'order') return me && s.orderPending.includes(me.id) ? btn('rollOrder', '🎲 Rolar para definir a ordem') : '';
     if (!myTurn) return '';
+    // Negociar: na vez do jogador, fora de decisões pendentes (compra/construção)
+    const tradeBtn = s.trade && s.trade.from === me.id ? btn('cancelTrade', '✖ Cancelar proposta', 'btn-secondary')
+      : s.trade || s.turnos.length < 2 ? '' : btn('openTrade', '🤝 Negociar', 'btn-secondary');
     switch (s.phase) {
+      case 'build': {
+        const t = tileAt(s, s.pendingBuild);
+        return btn('build', `🏠 Construir ${t.level === 4 ? 'hotel' : 'casa'} ${fmt(buildCost(t))}`, 'btn-primary', me.saldo < buildCost(t))
+          + btn('skipBuild', 'Agora não', 'btn-secondary');
+      }
       case 'roll':
         if (me.preso) {
           return btn('roll', '🎲 Tentar dupla') + btn('payJail', `Pagar fiança ${fmt(jailFine(s))}`, 'btn-secondary', me.saldo < jailFine(s))
-            + (me.cartasSaida ? btn('useJailCard', `Usar Habeas Corpus (${me.cartasSaida})`, 'btn-secondary') : '');
+            + (me.cartasSaida ? btn('useJailCard', `Usar Habeas Corpus (${me.cartasSaida})`, 'btn-secondary') : '') + tradeBtn;
         }
-        return btn('roll', '🎲 Rolar Dados');
+        return btn('roll', '🎲 Rolar Dados') + tradeBtn;
       case 'buy': {
         const t = tileAt(s, s.pendingBuy);
         return btn('buy', `Comprar ${fmt(t.price)}`, 'btn-primary', me.saldo < t.price) + btn('decline', 'Recusar', 'btn-secondary');
       }
       case 'debt':
-        return btn('payDebt', `Pagar ${fmt(s.debt.amount)}`, 'btn-primary', me.saldo < s.debt.amount) + btn('bankrupt', 'Declarar falência', 'btn-danger');
+        return btn('payDebt', `Pagar ${fmt(s.debt.amount)}`, 'btn-primary', me.saldo < s.debt.amount) + btn('bankrupt', 'Declarar falência', 'btn-danger') + tradeBtn;
       case 'end':
-        return btn('endTurn', 'Encerrar turno ⏭');
+        return btn('endTurn', 'Encerrar turno ⏭') + tradeBtn;
     }
     return '';
   },
@@ -930,6 +1041,10 @@ const UI = {
     else if (s.phase === 'order') waiting = actions ? '<p class="hint">Quem tirar mais nos dados começa. Empates rolam de novo.</p>' : '<p class="hint">Aguardando os outros rolarem…</p>';
     else if (!myTurn && cur) waiting = `<p class="hint">Aguardando <b style="color:${esc(cur.corPeao)}">${esc(cur.nome)}</b>…</p>`;
     this.$('turn-title').textContent = s.phase === 'order' ? 'Sorteio da ordem' : myTurn ? 'Sua vez!' : 'Jogada';
+    if (s.trade && s.phase !== 'gameover') {
+      const a = pById(s, s.trade.from), b = pById(s, s.trade.to);
+      waiting += `<p class="hint">🤝 Proposta de troca de <b>${esc(a.nome)}</b> para <b>${esc(b.nome)}</b> aguardando resposta…</p>`;
+    }
     this.$('turn-panel').innerHTML = `<div class="flex flex-wrap gap-2">${actions}</div>${waiting}`;
     this.$('bottom-bar').innerHTML = me
       ? `<span class="bottom-money" style="--pc:${esc(me.corPeao)}">${fmt(me.saldo)}</span><div class="flex gap-2">${actions || waiting}</div>` : '';
@@ -962,7 +1077,7 @@ const UI = {
         <span class="player-pos">${p.bancarroto ? '💀' : (s.phase === 'order' ? '' : i + 1)}</span>
         <span class="token-static" style="background:${esc(p.corPeao)}">${esc(p.nome.charAt(0).toUpperCase())}</span>
         <div class="flex-1 min-w-0">
-          <div class="truncate font-semibold">${esc(p.nome)}${p.id === this.myId ? ' <span class="you">você</span>' : ''}${p.conectado ? '' : ' <span title="desconectado">📴</span>'}${p.preso ? ' 🔒' : ''}</div>
+          <div class="truncate font-semibold">${esc(p.nome)}${p.id === this.myId ? ' <span class="you">você</span>' : ''}${p.conectado || p.bancarroto ? '' : ` <span class="text-amber-300 text-xs" title="Desconectado: volta entrando com o mesmo nome">📴 ${Math.max(0, Math.ceil((RECONNECT_GRACE_MS - (p.ausenteMs || 0)) / 1000))}s</span>`}${p.preso ? ' 🔒' : ''}</div>
           <div class="text-xs text-slate-400">${p.bancarroto ? 'falido' : `${p.propriedades.length} propriedade${p.propriedades.length === 1 ? '' : 's'}`}</div>
         </div>
         <span class="player-money">${fmt(p.saldo)}</span>
@@ -1022,6 +1137,37 @@ const UI = {
     if (s.phase === 'gameover') want = 'gameover';
     else if (myTurn && s.phase === 'buy') want = 'buy';
     else if (myTurn && s.phase === 'debt') want = 'debt';
+    else if (myTurn && s.phase === 'build') want = 'build';
+    else if (s.trade && s.trade.to === this.myId) want = 'trade';
+
+    if (want === 'build') {
+      const t = tileAt(s, s.pendingBuild);
+      this.openModal('build', this.cardBlock(s) + `<p class="mb-2">🏠 Você caiu de novo na sua propriedade!</p>` + this.tileInfo(s, t) + `
+        <p class="my-2">Seu saldo: <b>${fmt(me.saldo)}</b></p>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn btn-primary" data-act="build" ${me.saldo < buildCost(t) ? 'disabled' : ''}>Construir ${t.level === 4 ? 'hotel' : 'casa'} por ${fmt(buildCost(t))}</button>
+          <button class="btn btn-secondary" data-act="skipBuild">Agora não</button>
+        </div>`);
+      return;
+    }
+    if (want === 'trade') {
+      const tr = s.trade, from = pById(s, tr.from);
+      const items = (ids, m) => [...ids.map(i => {
+        const t = tileAt(s, i);
+        return `<li class="flex items-center gap-2"><span class="prop-swatch" style="background:${t.colorGroup ? s.board.groups[t.colorGroup].color : '#94a3b8'}"></span>${esc(t.name)}${t.mortgage ? ' <small class="text-red-300">(hipotecada)</small>' : ''}</li>`;
+      }), ...(m ? [`<li>💰 ${fmt(m)}</li>`] : [])].join('') || '<li class="hint">nada</li>';
+      this.openModal('trade', `
+        <h2 class="text-xl font-bold mb-3">🤝 Proposta de ${esc(from.nome)}</h2>
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div><h3 class="panel-title">Você recebe</h3><ul class="space-y-1 text-sm">${items(tr.give, tr.giveMoney)}</ul></div>
+          <div><h3 class="panel-title">Você dá</h3><ul class="space-y-1 text-sm">${items(tr.get, tr.getMoney)}</ul></div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn btn-primary" data-act="acceptTrade">Aceitar</button>
+          <button class="btn btn-danger" data-act="rejectTrade">Recusar</button>
+        </div>`);
+      return;
+    }
 
     if (want === 'gameover') {
       const w = pById(s, s.winnerId);
@@ -1053,9 +1199,8 @@ const UI = {
           <div class="flex items-center gap-2 text-sm">
             <span class="flex-1">${esc(t.name)}</span>
             ${t.level > 0 ? `<button class="btn-mini" data-act="sell" data-idx="${t.id}">Vender 🏠 +${fmt(round10(buildCost(t, t.level - 1) / 2))}</button>` : ''}
-            ${!t.mortgage && !(t.colorGroup && groupTiles(s, t.colorGroup).some(x => x.level > 0)) ? `<button class="btn-mini" data-act="mortgage" data-idx="${t.id}">Hipotecar +${fmt(mortgageValue(t))}</button>` : ''}
+            ${!t.mortgage && t.level === 0 ? `<button class="btn-mini" data-act="mortgage" data-idx="${t.id}">Hipotecar +${fmt(mortgageValue(t))}</button>` : ''}
             ${t.mortgage ? '<span class="text-slate-500">hipotecada</span>' : ''}
-            ${!t.mortgage && t.level === 0 && t.colorGroup && groupTiles(s, t.colorGroup).some(x => x.level > 0) ? '<span class="text-slate-500">venda as casas da cor para hipotecar</span>' : ''}
           </div>`).join('')}</div>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-primary" data-act="payDebt" ${me.saldo < s.debt.amount ? 'disabled' : ''}>Pagar ${fmt(s.debt.amount)}</button>
@@ -1065,7 +1210,7 @@ const UI = {
       return;
     }
     // Modal obrigatório deixou de valer: fecha
-    if (['buy', 'debt', 'gameover'].includes(this.modalKind)) this.closeModal();
+    if (['buy', 'debt', 'gameover', 'build', 'trade'].includes(this.modalKind)) this.closeModal();
 
     // Sorteio da ordem acabou de terminar: mostra o resultado a todos
     if (this._wasOrder && s.phase !== 'order') {
@@ -1084,7 +1229,7 @@ const UI = {
       const firstRender = this.lastCardSeq === 0 && this.lastRollSeq === s.rollSeq && !this._seenAny;
       this.lastCardSeq = s.lastCard.seq;
       const who = pById(s, s.lastCard.playerId);
-      if (!firstRender && this.modalKind !== 'tile') {
+      if (!firstRender && !['tile', 'tradeEdit'].includes(this.modalKind)) {
         this.openModal('card', `<div class="card-face"><b>${DECK_LABEL[s.lastCard.deck]}</b> — ${esc(who ? who.nome : '')}<p class="text-lg my-3">${esc(s.lastCard.text)}</p></div>
           <button class="btn btn-primary" data-close>OK</button>`);
       }
@@ -1100,7 +1245,7 @@ const UI = {
     if (t.type === 'property') {
       const labels = ['Aluguel', '1 casa', '2 casas', '3 casas', '4 casas', 'Hotel'];
       rows = t.rent.map((r, i) => `<tr class="${t.level === i ? 'text-amber-300 font-bold' : ''}"><td>${labels[i]}</td><td class="text-right">${fmt(r)}</td></tr>`).join('')
-        + `<tr><td colspan="2" class="text-xs text-slate-400">Conjunto completo dobra o aluguel sem construções. Construção: ${fmt(buildCost(t, 0))} a ${fmt(buildCost(t, 4))}.</td></tr>`;
+        + `<tr><td colspan="2" class="text-xs text-slate-400">Construa uma casa cada vez que cair de novo na sua propriedade (${fmt(buildCost(t, 0))} a ${fmt(buildCost(t, 4))}). Conjunto completo da cor dobra o aluguel sem construções.</td></tr>`;
     } else if (t.type === 'railroad') {
       rows = t.rent.map((r, i) => `<tr><td>${i + 1} estação(ões)</td><td class="text-right">${fmt(r)}</td></tr>`).join('');
     } else if (t.type === 'utility') {
@@ -1124,17 +1269,62 @@ const UI = {
     let ctrl = '';
     if (me && t.owner === me.id) {
       const b = (act, label, dis) => `<button class="btn btn-secondary" data-act="${act}" data-idx="${t.id}" ${dis || !myTurn ? 'disabled' : ''}>${label}</button>`;
-      const canBuild = t.type === 'property' && ownsGroup(s, me.id, t.colorGroup) && !groupTiles(s, t.colorGroup).some(x => x.mortgage) && t.level < 5;
       ctrl = `<div class="flex flex-wrap gap-2 mt-2">
-        ${t.type === 'property' ? b('build', `Construir ${t.level === 4 ? 'hotel' : 'casa'} (${fmt(buildCost(t))})`, !canBuild || me.saldo < buildCost(t)) : ''}
         ${t.level > 0 ? b('sell', `Vender construção (+${fmt(round10(buildCost(t, t.level - 1) / 2))})`) : ''}
-        ${!t.mortgage ? b('mortgage', `Hipotecar (+${fmt(mortgageValue(t))})`, t.colorGroup && groupTiles(s, t.colorGroup).some(x => x.level > 0)) : b('unmortgage', `Quitar hipoteca (${fmt(unmortgageCost(t))})`, me.saldo < unmortgageCost(t))}
+        ${!t.mortgage ? b('mortgage', `Hipotecar (+${fmt(mortgageValue(t))})`, t.level > 0) : b('unmortgage', `Quitar hipoteca (${fmt(unmortgageCost(t))})`, me.saldo < unmortgageCost(t))}
       </div>
       ${!myTurn ? '<p class="text-xs text-slate-400 mt-2">Gerencie suas propriedades durante a sua vez.</p>' : ''}
-      ${t.type === 'property' && !ownsGroup(s, me.id, t.colorGroup) ? '<p class="text-xs text-slate-400 mt-2">Para construir, possua todos os terrenos desta cor.</p>' : ''}`;
+      ${t.type === 'property' && t.level < 5 ? '<p class="text-xs text-slate-400 mt-2">🏠 Para construir, caia de novo nesta propriedade.</p>' : ''}`;
     }
     this.openTile = i;
     this.openModal('tile', this.tileInfo(s, t) + ctrl + '<button class="btn btn-secondary mt-3" data-close>Fechar</button>');
+  },
+
+  // Janela para montar uma proposta de troca
+  openTradeEditor(toId) {
+    const s = this.state, me = pById(s, this.myId);
+    const others = s.turnos.map(id => pById(s, id)).filter(p => p.id !== this.myId);
+    if (!me || !others.length) return;
+    const to = others.find(p => p.id === toId) || others[0];
+    const list = (p, name) => {
+      const ts = p.propriedades.map(i => tileAt(s, i)).filter(t => TRADABLE.includes(t.type)).sort((a, b) => a.id - b.id);
+      return ts.length ? ts.map(t => `
+        <label class="trade-item ${t.level ? 'opacity-40' : ''}">
+          <input type="checkbox" name="${name}" value="${t.id}" ${t.level ? 'disabled' : ''}>
+          <span class="prop-swatch" style="background:${t.colorGroup ? s.board.groups[t.colorGroup].color : '#94a3b8'}"></span>
+          <span class="truncate">${esc(t.name)}</span>${t.mortgage ? ' <small class="text-red-300">hip.</small>' : ''}${t.level ? ' <small>🏠</small>' : ''}
+        </label>`).join('') : '<p class="hint">Sem propriedades.</p>';
+    };
+    this.openModal('tradeEdit', `
+      <h2 class="text-xl font-bold mb-3">🤝 Negociar</h2>
+      <label class="flex items-center gap-2 mb-3 text-sm">Com
+        <select id="tr-to" class="flex-1 rounded bg-slate-900 border border-slate-600 px-2 py-1">
+          ${others.map(o => `<option value="${esc(o.id)}" ${o === to ? 'selected' : ''}>${esc(o.nome)} — ${fmt(o.saldo)}</option>`).join('')}
+        </select>
+      </label>
+      <div class="grid grid-cols-2 gap-3">
+        <div><h3 class="panel-title">Você dá</h3><div class="trade-list">${list(me, 'give')}</div>
+          <label class="text-xs block mt-2">Dinheiro <input id="tr-give-money" type="number" min="0" max="${me.saldo}" step="10" value="0" class="trade-money"></label></div>
+        <div><h3 class="panel-title">Você recebe</h3><div class="trade-list">${list(to, 'get')}</div>
+          <label class="text-xs block mt-2">Dinheiro <input id="tr-get-money" type="number" min="0" max="${to.saldo}" step="10" value="0" class="trade-money"></label></div>
+      </div>
+      <p class="hint">Propriedades com casas não podem ser trocadas. Hipotecadas vão com a hipoteca.</p>
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button class="btn btn-primary" data-act="sendTrade">Propor troca</button>
+        <button class="btn btn-secondary" data-close>Cancelar</button>
+      </div>`);
+  },
+
+  sendTrade() {
+    const box = this.$('modal-box');
+    const picked = n => [...box.querySelectorAll(`input[name="${n}"]:checked`)].map(i => Number(i.value));
+    Net.act('proposeTrade', {
+      to: box.querySelector('#tr-to').value,
+      give: picked('give'), get: picked('get'),
+      giveMoney: Number(box.querySelector('#tr-give-money').value) || 0,
+      getMoney: Number(box.querySelector('#tr-get-money').value) || 0,
+    });
+    this.closeModal();
   },
 
   /* ---------- Zoom / pan do tabuleiro ---------- */
@@ -1165,19 +1355,23 @@ const UI = {
       if (act && !act.disabled) {
         const a = act.dataset.act;
         if (a === 'newGame') { Net.leave(); return; }
+        if (a === 'openTrade') { this.openTradeEditor(); return; }
+        if (a === 'sendTrade') { this.sendTrade(); return; }
         Net.act(a, act.dataset.idx !== undefined ? { idx: Number(act.dataset.idx) } : {});
         if (this.modalKind === 'card') this.closeModal();
         return;
       }
-      if (e.target.closest('[data-close]') || (e.target.id === 'modal' && ['card', 'tile'].includes(this.modalKind))) { this.closeModal(); return; }
+      if (e.target.closest('[data-close]') || (e.target.id === 'modal' && ['card', 'tile', 'tradeEdit'].includes(this.modalKind))) { this.closeModal(); return; }
       const open = e.target.closest('[data-open]') || e.target.closest('[data-tile]');
       if (open && !this._dragged) this.openTileModal(Number(open.dataset.open ?? open.dataset.tile));
     });
+    // Trocar o jogador da proposta recarrega a lista de propriedades dele
+    document.addEventListener('change', e => { if (e.target.id === 'tr-to') this.openTradeEditor(e.target.value); });
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && ['card', 'tile'].includes(this.modalKind)) this.closeModal();
+      if (e.key === 'Escape' && ['card', 'tile', 'tradeEdit'].includes(this.modalKind)) this.closeModal();
       // Mantém o foco do teclado dentro do modal aberto
       if (e.key === 'Tab' && this.modalKind) {
-        const f = [...this.$('modal-box').querySelectorAll('button:not([disabled])')];
+        const f = [...this.$('modal-box').querySelectorAll('button:not([disabled]), input:not([disabled]), select')];
         if (!f.length) return;
         const i = f.indexOf(document.activeElement);
         if (e.shiftKey && i <= 0) { f[f.length - 1].focus(); e.preventDefault(); }

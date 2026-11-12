@@ -220,11 +220,14 @@ const Net = {
       case 'roll-dice': if (p.playerId === id) this.hostAct(id, 'roll'); break;
       case 'action':
         if (p.playerId === id && typeof p.action === 'string') {
-          const data = p.data && Number.isInteger(p.data.idx) ? { idx: p.data.idx } : {};
+          // Repassa só os campos conhecidos; o motor valida os tipos (readTrade / Number.isInteger)
+          const d = p.data && typeof p.data === 'object' ? p.data : {};
+          const data = { idx: d.idx, to: d.to, give: d.give, get: d.get, giveMoney: d.giveMoney, getMoney: d.getMoney };
           this.hostAct(id, p.action, data);
         }
         break;
       case 'disconnect': this.peerGone(id, true); break;
+      case 'ping': conn.send({ type: 'pong' }); break;   // resposta imediata: não depende de timer do host
     }
   },
 
@@ -233,8 +236,23 @@ const Net = {
     const refuse = message => { conn.send({ type: 'error', payload: { message } }); setTimeout(() => conn.close(), 500); };
     if (this.state) {
       // Partida em andamento: só aceita quem já faz parte dela (reconexão)
-      const pl = pById(this.state, id);
-      if (!pl) { refuse('A partida já começou.'); return; }
+      let pl = pById(this.state, id);
+      if (!pl) {
+        // Voltando por outra guia/aparelho (id novo): ocupa o lugar do jogador DESCONECTADO com o mesmo nome
+        const name = String(p.name || '').trim().toLowerCase();
+        const seat = this.state.players.find(x => !x.conectado && !x.bancarroto && x.nome.trim().toLowerCase() === name);
+        if (!seat) {
+          const busy = this.state.players.some(x => x.conectado && x.nome.trim().toLowerCase() === name);
+          refuse(busy ? 'Esse jogador ainda aparece conectado. Tente de novo em alguns segundos.'
+            : 'A partida já começou. Para voltar, entre com o mesmo nome que você usava.');
+          return;
+        }
+        const oldId = seat.id;
+        this.conns.delete(oldId);
+        this.lastSeen.delete(oldId);
+        this.state = renameId(this.state, oldId, id);
+        pl = pById(this.state, id);
+      }
       this.conns.set(id, conn);
       if (!pl.conectado) { pl.conectado = true; pl.ausenteMs = 0; log(this.state, `🔌 ${pl.nome} reconectou.`); }
       conn.send({ type: 'start-game', payload: { boardConfig: this.state.board, players: this.state.players, initialMoney: this.state.board.initialMoney } });
@@ -298,7 +316,8 @@ const Net = {
       } else if (dead && !dead.bancarroto && dead.conectado) { dead.conectado = false; dead.ausenteMs = 0; }
       // Quem não se conectar ao novo host em PEER_TIMEOUT_MS será marcado como desconectado
       s.players.forEach(p => { if (p.id !== this.myId && p.conectado && !p.bancarroto) this.lastSeen.set(p.id, now); });
-      log(s, `👑 ${pById(s, this.myId).nome} assumiu como host.`);
+      const me = pById(s, this.myId);
+      log(s, `👑 ${me ? me.nome : 'Um espectador'} assumiu como host.`);
       s.phaseSince = now;
       this.broadcastState();
     } else {
@@ -306,6 +325,8 @@ const Net = {
       this.lobby.forEach(x => { if (x.id !== this.myId) this.lastSeen.set(x.id, now); });
       this.broadcastLobby();
     }
+    // Eleito sem saída explícita do antigo: confere por 1 min se ele não estava só congelado
+    if (deadId && this.hostLeft !== deadId) this._probe = { id: deadId, until: now + 60000 };
     UI.toast('👑 Você agora é o host da sala.');
   },
 
@@ -412,6 +433,14 @@ const Net = {
       case 'ping':
         conn.send({ type: 'pong' });
         break;
+      case 'redirect':
+        // O host devolveu a liderança a outro (eleição por engano): segue para o host verdadeiro
+        if (payload && payload.hostId && payload.hostId !== this.hostId) {
+          this.hostConn = null;
+          conn.close();
+          this.findHost([payload.hostId], null, false).then(ok => { if (!ok) this.onHostLost(); });
+        }
+        break;
       case 'error':
         UI.skipAnim();   // a tela estava atrasada em relação ao host: mostra o estado atual já
         UI.toast(payload.message, 4000);
@@ -432,10 +461,52 @@ const Net = {
       : this.lobby.map(p => p.id);
     const cands = ids.filter(id => id !== dead);
     UI.toast('⚠️ Host desconectou — elegendo novo host…', 3000);
-    this.findHost(cands, dead, true).then(ok => {
+    (async () => {
+      // Falso alarme (rede oscilou, aba congelada)? Se o host antigo ainda responde, fica com ele.
+      if (dead && this.hostLeft !== dead && (await this.connectTo(dead)) === true) { this.electing = false; return; }
+      const ok = await this.findHost(cands, dead, true);
       this.electing = false;
       if (!ok && !this.isHost) this.becomeHost(dead);   // ninguém respondeu: segue sozinho
+    })();
+  },
+
+  /**
+   * Host eleito por falta de resposta continua tentando falar com o host antigo por 1 min.
+   * Se ele estiver vivo (eleição por engano), devolve a liderança e leva os jogadores de volta.
+   */
+  probeOldHost() {
+    const pr = this._probe;
+    if (!this.isHost || Date.now() > pr.until) { this._probe = null; return; }
+    if (pr.busy || Date.now() - (pr.at || 0) < 5000) return;
+    pr.busy = true;
+    pr.at = Date.now();
+    const conn = this.peer.connect(pr.id, { reliable: true, serialization: 'json' });
+    let handed = false;
+    setTimeout(() => { pr.busy = false; if (!handed) conn.close(); }, 4000);
+    conn.on('open', () => conn.send({ type: 'join', payload: { id: this.myId, name: this.me.name, color: this.me.color } }));
+    conn.on('data', msg => {
+      if (handed) { this.onHostData(conn, msg); return; }
+      if (!msg || !['start-game', 'update-state', 'players-list'].includes(msg.type) || !this.isHost) { conn.close(); return; }
+      handed = true;
+      this._probe = null;
+      this.stepDown(conn, pr.id);
+      this.onHostData(conn, msg);
     });
+    conn.on('close', () => { if (handed && this.hostConn === conn) this.onHostLost(); });
+  },
+
+  // Deixa de ser host e volta a ser cliente do host verdadeiro
+  stepDown(conn, hostId) {
+    this.broadcast('redirect', { hostId });
+    const old = [...this.conns.values()];
+    setTimeout(() => old.forEach(c => c.close()), 800);
+    this.isHost = false;
+    this.conns = new Map();
+    this.lastSeen = new Map();
+    this.hostConn = conn;
+    this.hostId = hostId;
+    this.lastHostMsg = Date.now();
+    UI.toast('🔄 O host anterior ainda estava ativo — voltando para ele.', 4000);
   },
 
   /* ================= QUALQUER PEER ================= */
@@ -459,6 +530,18 @@ const Net = {
   // Relógio: batimentos, detecção de quedas e temporizadores do jogo
   loop() {
     const now = Date.now();
+    // Aba em segundo plano: o navegador pode segurar os timers por até 1 min.
+    // Se este relógio atrasou, o silêncio dos outros é culpa nossa, não queda deles: recomeça a contagem.
+    if (this._lastLoop && now - this._lastLoop > 3000) {
+      for (const id of this.lastSeen.keys()) this.lastSeen.set(id, now);
+      this.lastHostMsg = now;
+    }
+    this._lastLoop = now;
+    if (this._probe) this.probeOldHost();
+    if (!this.isHost && this.hostConn && this.hostConn.open && now - (this._lastPing || 0) >= HEARTBEAT_MS) {
+      this._lastPing = now;
+      this.hostConn.send({ type: 'ping' });   // o host responde com pong na hora
+    }
     if (this.isHost) {
       if (now - (this._lastPing || 0) >= HEARTBEAT_MS) { this._lastPing = now; this.broadcast('ping', {}); }
       for (const [id, t] of this.lastSeen) if (now - t > PEER_TIMEOUT_MS) this.peerGone(id, false);
@@ -493,7 +576,9 @@ const Net = {
       .filter((id, i, a) => id && id !== this.myId && a.indexOf(id) === i);
     if (await this.findHost(others, null, false)) return;
     // Ninguém respondeu: retoma como host com o estado salvo (ou desiste se era só convidado no lobby)
-    if (this.state || sess.hostId === this.myId) { this.becomeHost(null); return; }
+    // (só se eu fizer parte da partida salva; sessão de outra partida é descartada)
+    if ((this.state && pById(this.state, this.myId)) || (!this.state && sess.hostId === this.myId)) { this.becomeHost(null); return; }
+    this.state = null;
     UI.toast('A sala não existe mais.', 4000);
     this.clear();
     UI.$('lobby-loading').classList.add('hidden');
