@@ -54,6 +54,7 @@ const Net = {
     return SESSION_PREFIX + k;
   },
   save() {
+    if (this.leaving) return;   // saindo: não pode regravar a sessão que acabou de ser apagada
     try {
       localStorage.setItem(this.sessionKey(), JSON.stringify({
         at: Date.now(), myId: this.myId, me: this.me, roomCode: this.roomCode, hostId: this.hostId, lobby: this.lobby, state: this.state,
@@ -153,8 +154,12 @@ const Net = {
   leave() {
     if (!this.isHost && this.hostConn && this.hostConn.open) this.hostConn.send({ type: 'disconnect', payload: { id: this.myId } });
     if (this.isHost) this.broadcast('disconnect', { id: this.myId });   // os outros elegem um novo host na hora
+    this.leaving = true;
     this.clear();
-    setTimeout(() => { location.href = location.pathname; }, 300);
+    setTimeout(() => {
+      if (this.peer) this.peer.destroy();
+      location.href = location.pathname;
+    }, 300);
   },
 
   /* ---------------- Envio de ações (qualquer jogador) ---------------- */
@@ -172,7 +177,7 @@ const Net = {
   },
 
   sendTo(id, type, payload) {
-    if (id === this.myId) { if (type === 'error') UI.toast(payload.message, 4000); return; }
+    if (id === this.myId) { if (type === 'error') { UI.skipAnim(); UI.toast(payload.message, 4000); } return; }
     const c = this.conns.get(id);
     if (c && c.open) c.send({ type, payload });
   },
@@ -408,6 +413,7 @@ const Net = {
         conn.send({ type: 'pong' });
         break;
       case 'error':
+        UI.skipAnim();   // a tela estava atrasada em relação ao host: mostra o estado atual já
         UI.toast(payload.message, 4000);
         break;
     }

@@ -728,34 +728,51 @@ const UI = {
     }
     const rolled = this.lastRollSeq !== -1 && s.rollSeq !== this.lastRollSeq;
     this.renderDice(s);
-    // Movimentos novos: os peões andam casa a casa antes de o resultado aparecer
+    // Movimentos novos: os peões andam casa a casa antes de o resultado aparecer.
+    // Só a jogada mais recente é animada: jogadas acumuladas (aba em segundo plano, celular bloqueado)
+    // nunca podem deixar a tela presa num estado antigo enquanto o host já seguiu.
     if (s.anim && s.anim.seq !== this.lastAnimSeq) {
       this.lastAnimSeq = s.anim.seq;
-      if (s.anim.moves.length) {
+      this.skipAnim();
+      if (s.anim.moves.length && !document.hidden) {
+        this.shownPos = {};
         for (const m of s.anim.moves) if (!m.jump && this.shownPos[m.playerId] === undefined) this.shownPos[m.playerId] = m.from;
-        this.animQueue.push({ moves: s.anim.moves, delay: rolled ? 650 : 0 });
+        this.animQueue = [{ moves: s.anim.moves, delay: rolled ? 650 : 0, token: this.animToken }];
         this.runAnim();
       }
     }
     if (this.animating) {
       updateBoardDOM(board, s, this.shownPos, this._movingId);
       document.querySelectorAll('#turn-panel [data-act], #bottom-bar [data-act]').forEach(b => { b.disabled = true; });
+      // Compra/dívida que já não vale no host não pode continuar aberta durante a animação
+      const mine = currentPlayer(s) && currentPlayer(s).id === this.myId;
+      if (['buy', 'debt'].includes(this.modalKind) && !(mine && s.phase === this.modalKind)) this.closeModal();
       return;
     }
     this.shownPos = {};
     this.renderFull(s);
   },
 
-  // Executa a fila de movimentos, um passo por casa
+  // Cancela a animação em andamento (o peão vai direto para a posição real)
+  skipAnim() {
+    this.animToken = (this.animToken || 0) + 1;
+    this.animQueue = [];
+    if (this._wakeAnim) this._wakeAnim();
+  },
+
+  // Executa a jogada animada, um passo por casa; para assim que for cancelada
   async runAnim() {
     if (this.animating) return;
     this.animating = true;
     const board = this.$('board');
-    const wait = ms => new Promise(r => setTimeout(r, document.hidden ? 0 : ms));   // aba em segundo plano: sem animação
+    // Espera que termina antes se a animação for cancelada (nova jogada, aba escondida ou erro do host)
+    const wait = ms => new Promise(r => { this._wakeAnim = r; setTimeout(r, ms); });
     while (this.animQueue.length) {
-      const { moves, delay } = this.animQueue.shift();
+      const { moves, delay, token } = this.animQueue.shift();
+      const live = () => token === this.animToken && !document.hidden;
       if (delay) await wait(delay);
       for (const m of moves) {
+        if (!live()) break;
         const N = this.state.board.size;
         this._movingId = m.playerId;
         if (m.jump) {
@@ -766,18 +783,21 @@ const UI = {
           continue;
         }
         const dir = Math.sign(m.steps);
-        for (let k = 1; k <= Math.abs(m.steps); k++) {
+        for (let k = 1; k <= Math.abs(m.steps) && live(); k++) {
           this.shownPos[m.playerId] = ((m.from + dir * k) % N + N) % N;
           updateBoardDOM(board, this.state, this.shownPos, m.playerId);
           if (window.innerWidth < 768) this.focusTile(this.shownPos[m.playerId]);
           await wait(170);
         }
+        if (!live()) break;
         this.pulseTile(this.shownPos[m.playerId]);
         await wait(300);
       }
     }
     this._movingId = null;
+    this._wakeAnim = null;
     this.animating = false;
+    this.shownPos = {};
     this.render(this.state);
   },
 
@@ -1169,6 +1189,8 @@ const UI = {
     this.$('zoom-fit').onclick = () => this.setZoom(1);
     this.$('btn-panel').onclick = () => this.$('sidebar').classList.toggle('open');
     window.addEventListener('resize', () => this.fitBoard());
+    // Aba escondida: a animação é abandonada (timers ficam lentíssimos em segundo plano)
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.skipAnim(); });
 
     // Arrastar com o mouse para mover o tabuleiro (no toque, o scroll nativo já faz isso)
     const wrap = this.$('board-wrap');
