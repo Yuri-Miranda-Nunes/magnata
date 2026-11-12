@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magnata — Tabuleiro Dinâmico Multiplayer</title>
+  <meta name="description" content="Jogo de negociação de imóveis multiplayer P2P para 2 a 8 jogadores, com tabuleiro que cresce com o número de jogadores.">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-slate-900 text-slate-100">
+
+  <!-- ===================== LOBBY ===================== -->
+  <section id="screen-lobby" class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-lg bg-slate-800 rounded-2xl p-6 shadow-2xl border border-slate-700">
+      <h1 class="text-3xl font-extrabold text-center">🏙️ Magnata</h1>
+      <p class="text-center text-slate-400 mb-6">Tabuleiro dinâmico · multiplayer P2P · 2 a 8 jogadores</p>
+
+      <!-- Entrada: nome, cor, criar ou entrar -->
+      <div id="lobby-entry" class="space-y-4">
+        <label class="block">
+          <span class="text-sm text-slate-300">Seu nome</span>
+          <input id="in-name" maxlength="16" autocomplete="nickname" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500" placeholder="Ex.: Ana">
+        </label>
+        <div>
+          <span class="text-sm text-slate-300">Cor do peão</span>
+          <div id="color-picker" class="flex flex-wrap gap-2 mt-1"></div>
+        </div>
+        <button id="btn-create" class="btn btn-primary w-full text-lg">✨ Criar Sala</button>
+        <div class="flex items-center gap-2 text-slate-500 text-sm"><hr class="flex-1 border-slate-700">ou<hr class="flex-1 border-slate-700"></div>
+        <div class="flex gap-2">
+          <input id="in-code" maxlength="40" class="flex-1 min-w-0 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-sky-500" placeholder="CÓDIGO">
+          <button id="btn-join" class="btn btn-secondary">Entrar com Código</button>
+        </div>
+        <p id="lobby-status-entry" class="text-sm text-slate-400 text-center" aria-live="polite"></p>
+      </div>
+
+      <!-- Reconexão após refresh -->
+      <div id="lobby-loading" class="hidden text-center py-8">
+        <div class="text-4xl animate-spin inline-block">🎲</div>
+        <p class="mt-3 text-slate-300">Reconectando à partida…</p>
+      </div>
+
+      <!-- Sala: jogadores conectados -->
+      <div id="lobby-room" class="hidden space-y-4">
+        <div class="flex items-center justify-between bg-slate-900 rounded-lg px-4 py-3">
+          <div>
+            <div class="text-xs text-slate-400">Código da sala</div>
+            <div id="room-code" class="text-2xl font-mono font-bold tracking-widest text-amber-300"></div>
+          </div>
+          <button id="btn-copy" class="btn btn-secondary">🔗 Copiar link</button>
+        </div>
+        <ul id="player-list" class="space-y-2" aria-live="polite"></ul>
+        <p id="lobby-status" class="text-sm text-slate-400 text-center"></p>
+        <div id="host-controls" class="hidden space-y-3">
+          <label class="flex items-center justify-between text-sm">
+            <span>Limite de tempo (vence o maior patrimônio)</span>
+            <select id="sel-limit" class="rounded bg-slate-900 border border-slate-600 px-2 py-1">
+              <option value="30">30 min</option>
+              <option value="45" selected>45 min</option>
+              <option value="60">60 min</option>
+              <option value="0">Sem limite</option>
+            </select>
+          </label>
+          <button id="btn-start" class="btn btn-primary w-full text-lg" disabled>▶ Iniciar Jogo</button>
+        </div>
+        <button id="btn-leave" class="btn btn-ghost w-full">Sair da sala</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== JOGO ===================== -->
+  <section id="screen-game" class="hidden h-screen flex flex-col">
+    <header class="flex items-center gap-3 px-3 py-2 bg-slate-800 border-b border-slate-700 text-sm">
+      <span class="font-extrabold">🏙️ Magnata</span>
+      <span class="text-slate-400">Sala <b id="g-room" class="font-mono text-amber-300"></b></span>
+      <span class="text-slate-400">⏱ <b id="g-timer"></b></span>
+      <span class="flex-1"></span>
+      <button id="btn-leave-game" class="btn-mini">Sair</button>
+      <button id="btn-panel" class="btn-mini lg:hidden" aria-controls="sidebar">☰ Painel</button>
+    </header>
+
+    <div class="flex-1 flex min-h-0 relative">
+      <!-- Tabuleiro central (scroll/arrastar para mover, botões para zoom) -->
+      <main id="board-wrap" class="flex-1 overflow-auto relative">
+        <div id="board" class="board"></div>
+      </main>
+      <div class="zoom-controls">
+        <button id="zoom-in" aria-label="Aproximar">＋</button>
+        <button id="zoom-out" aria-label="Afastar">－</button>
+        <button id="zoom-fit" aria-label="Ajustar à tela">⤢</button>
+      </div>
+
+      <!-- Sidebar direita: ações, saldo, propriedades, jogadores e eventos -->
+      <aside id="sidebar" class="sidebar">
+        <section class="panel">
+          <h2 class="panel-title">Sua jogada</h2>
+          <div id="turn-panel" class="space-y-2"></div>
+        </section>
+        <section class="panel">
+          <h2 class="panel-title">Você</h2>
+          <div id="me-panel"></div>
+        </section>
+        <section class="panel">
+          <h2 class="panel-title">Jogadores</h2>
+          <div id="players-panel"></div>
+        </section>
+        <section class="panel flex-1 min-h-0 flex flex-col">
+          <h2 class="panel-title">Eventos</h2>
+          <div id="log" class="log" aria-live="polite"></div>
+        </section>
+      </aside>
+    </div>
+
+    <!-- Barra inferior (tablet/celular): foco no jogador local -->
+    <div id="bottom-bar" class="bottom-bar lg:hidden"></div>
+  </section>
+
+  <!-- Modal genérico (compra, construção, cartas, dívida, fim de jogo) -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-box" class="modal-box"></div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="board.js"></script>
+  <script src="game.js"></script>
+  <script src="peer.js"></script>
+</body>
+</html>
