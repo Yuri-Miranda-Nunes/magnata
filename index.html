@@ -7,7 +7,7 @@
   <meta name="description" content="Jogo de negociação de imóveis multiplayer P2P para 2 a 8 jogadores, com tabuleiro que cresce com o número de jogadores.">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body class="text-slate-100">
 
@@ -72,7 +72,7 @@
   </section>
 
   <!-- ===================== JOGO ===================== -->
-  <section id="screen-game" class="hidden h-screen flex flex-col">
+  <section id="screen-game" class="hidden h-screen flex flex-col overflow-hidden">
     <header class="game-header flex items-center gap-3 px-3 py-1.5 text-sm">
       <span class="flex items-center gap-1"><span class="text-lg" aria-hidden="true">🏙️</span><span class="logo text-lg">MAGNATA</span></span>
       <span class="text-slate-400">Sala <b id="g-room" class="font-mono text-amber-300"></b></span>
@@ -92,14 +92,16 @@
         </div>
       </main>
 
-      <!-- Direita: jogadores (clique para detalhes e troca), música e eventos -->
+      <!-- Direita: jogadores (clique para detalhes e troca), música, aba de encerrar turno e dados -->
       <aside class="side">
         <div id="players-panel" class="players"></div>
         <button id="btn-music" class="music-btn" aria-pressed="false" title="Ligar/desligar música"><span class="music-icon">🔇</span><span class="music-label">Música</span></button>
-        <section class="panel log-panel">
-          <h2 class="panel-title">Eventos</h2>
-          <div id="log" class="log" aria-live="polite"></div>
-        </section>
+        <div class="side-spacer"></div>
+        <button id="end-tab" class="end-tab" data-act="endTurn" disabled>Encerrar turno ⏭<small>espaço</small></button>
+        <button id="dice" class="dice-tray" data-act="roll" disabled aria-label="Rolar os dados">
+          <span class="die"></span><span class="die"></span>
+        </button>
+        <p id="dice-hint" class="dice-hint" aria-live="polite"></p>
       </aside>
 
       <!-- Embaixo: carteira e a mão de cartas (propriedades e Habeas Corpus) -->
@@ -115,9 +117,9 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="banner" class="banner" aria-hidden="true"></div>
 
-  <script src="board.js?v=9"></script>
-  <script src="game.js?v=9"></script>
-  <script src="music.js?v=9"></script>
-  <script src="peer.js?v=9"></script>
+  <script src="board.js?v=11"></script>
+  <script src="game.js?v=11"></script>
+  <script src="music.js?v=11"></script>
+  <script src="peer.js?v=11"></script>
 </body>
 </html>

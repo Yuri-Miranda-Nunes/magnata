@@ -180,10 +180,19 @@ body {
 }
 .turn-dot { width: .8em; height: .8em; border-radius: 9999px; border: 2px solid #fff; display: inline-block; }
 
-/* Dados com pontos (grade 3x3) */
-.dice-tray { display: flex; gap: calc(var(--cell) * .3); padding: calc(var(--cell) * .15); }
+/* Dados com pontos (grade 3x3): clicáveis, à direita do tabuleiro */
+.dice-tray {
+  display: flex; justify-content: center; gap: 1rem; padding: .6rem; border-radius: 1rem; align-self: center;
+  transition: transform .15s, filter .2s; cursor: default;
+}
+.dice-tray:disabled { filter: saturate(.6) brightness(.8); }
+.dice-tray.can-roll { cursor: pointer; animation: dice-call 1.6s ease-in-out infinite; }
+.dice-tray.can-roll:hover { transform: translateY(-3px) scale(1.05); }
+.dice-tray:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; }
+@keyframes dice-call { 50% { filter: drop-shadow(0 0 14px rgba(253, 224, 71, .75)); } }
+.dice-hint { min-height: 1.2em; text-align: center; font-size: .8rem; color: #fde68a; margin-top: -.3rem; }
 .die {
-  width: calc(var(--cell) * 1.05); height: calc(var(--cell) * 1.05);
+  width: 4.2rem; height: 4.2rem;
   display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: 12%;
   background: linear-gradient(145deg, #ffffff, #e5e7eb); border-radius: 18%;
   box-shadow: inset 0 -4px 0 rgba(0, 0, 0, .15), inset 0 2px 0 #fff, 0 6px 14px rgba(0, 0, 0, .45);
@@ -208,6 +217,8 @@ body {
   font-size: calc(var(--cell) * .24); box-shadow: 0 6px 16px rgba(0, 0, 0, .45); border: 2px solid #f59e0b;
   transform: rotate(-1.5deg);
 }
+.center-card.pop { animation: card-pop .45s cubic-bezier(.3, 1.6, .5, 1); }
+@keyframes card-pop { from { transform: rotate(-1.5deg) scale(.6); opacity: 0; } }
 
 .zoom-controls { position: absolute; left: 8px; top: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 5; }
 .zoom-controls button {
@@ -291,11 +302,23 @@ body {
 .music-btn[aria-pressed="true"] .music-icon { border-color: #10b981; box-shadow: 0 0 14px rgba(16, 185, 129, .5); }
 .music-btn:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; border-radius: 9999px; }
 
-/* Eventos */
-.log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.log { flex: 1; min-height: 0; overflow-y: auto; font-size: .8rem; color: #cbd5e1; }
-.log-line { padding: 3px 0; border-bottom: 1px solid #172238; }
-.log-line:last-child { color: #fff; font-weight: 600; }
+.side-spacer { flex: 1; }
+
+/* Aba de encerrar turno: fica recolhida fora da tela e desliza para dentro quando o turno pode acabar */
+.end-tab {
+  align-self: flex-end; margin-right: -.6rem; width: max-content;
+  display: flex; align-items: center; gap: .5rem; padding: .8rem 1.2rem .8rem 1.1rem;
+  border-radius: 9999px 0 0 9999px; font-weight: 900; font-size: 1.05rem; color: #fff; white-space: nowrap;
+  background: linear-gradient(180deg, #10b981, #047857);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .25);
+  transform: translateX(calc(100% - 12px)); opacity: .55;
+  transition: transform .5s cubic-bezier(.3, 1.4, .5, 1), opacity .3s;
+}
+.end-tab small { font-size: .65rem; font-weight: 700; opacity: .8; border: 1px solid rgba(255, 255, 255, .5); border-radius: .35rem; padding: 0 .3rem; }
+.end-tab.ready { transform: none; opacity: 1; cursor: pointer; animation: tab-glow 1.5s ease-in-out .5s infinite; }
+.end-tab.ready:hover { filter: brightness(1.12); }
+.end-tab:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; }
+@keyframes tab-glow { 50% { box-shadow: 0 6px 18px rgba(0, 0, 0, .45), 0 0 22px 4px rgba(16, 185, 129, .7); } }
 
 /* Carteira: dinheiro e patrimônio do jogador local */
 .wallet {
@@ -374,7 +397,12 @@ body {
   .pchip-name { font-size: .8rem; }
   .pchip-money { font-size: .75rem; }
   .pchip-avatar { --size: 2.5rem; font-size: 1rem; border-width: 2px; }
-  .log-panel { display: none; }
+  .side-spacer { display: none; }
+  .dice-tray { gap: .4rem; padding: .2rem; }
+  .die { width: 2.5rem; height: 2.5rem; }
+  .dice-hint { display: none; }
+  .end-tab { position: fixed; right: 0; bottom: 132px; z-index: 20; margin: 0; padding: .65rem 1.1rem .65rem .9rem; font-size: .95rem; }
+  .end-tab small { display: none; }
   .music-label { display: none; }
   .music-icon { width: 2.4rem; height: 2.4rem; }
   .wallet { border-width: 3px; }
@@ -430,6 +458,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .token-active, .token-hop, .dice-tray.rolling .die, .modal-box, .tile.landed, .banner.show, .money-float { animation: none; }
-  .board, .pcard { transition: none; }
+  .board, .pcard, .end-tab { transition: none; }
+  .dice-tray.can-roll, .end-tab.ready, .center-card.pop { animation: none; }
   .banner.show { opacity: 1; }
 }

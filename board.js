@@ -170,7 +170,6 @@ function buildBoardDOM(el, board) {
   }).join('') + `<div class="board-center" style="grid-row:2/${G};grid-column:2/${G}">
       <div class="center-title">MAGNATA</div>
       <div class="center-sub">${board.size} casas · ${board.sets} conjuntos · salário ${fmt(board.salary)}</div>
-      <div id="dice" class="dice-tray"><div class="die">${dieFaceHTML(1)}</div><div class="die">${dieFaceHTML(1)}</div></div>
       <div id="center-turn" class="center-turn"></div>
       <div id="center-order" class="center-order hidden"></div>
       <div id="center-card" class="center-card hidden"></div>

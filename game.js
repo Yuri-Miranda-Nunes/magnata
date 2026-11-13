@@ -845,7 +845,9 @@ const UI = {
     }
     if (this.animating) {
       updateBoardDOM(board, s, this.shownPos, this._movingId);
-      document.querySelectorAll('#actions [data-act]').forEach(b => { b.disabled = true; });
+      document.querySelectorAll('#actions [data-act], #dice, #end-tab').forEach(b => { b.disabled = true; });
+      this.$('dice').classList.remove('can-roll');
+      this.$('end-tab').classList.remove('ready');
       // Compra/dívida que já não vale no host não pode continuar aberta durante a animação
       const mine = currentPlayer(s) && currentPlayer(s).id === this.myId;
       const still = { buy: mine && s.phase === 'buy', debt: mine && s.phase === 'debt', build: mine && s.phase === 'build', trade: !!(s.trade && s.trade.to === this.myId) };
@@ -937,7 +939,7 @@ const UI = {
     this.renderOrder(s);
     this.renderCard(s);
     this.renderSidebar(s, me, cur, myTurn);
-    this.renderLog(s);
+    this.renderControls(s, me, myTurn);
     this.renderModals(s, me, myTurn);
     this._wasOrder = s.phase === 'order';
 
@@ -1001,16 +1003,20 @@ const UI = {
     const el = this.$('center-card');
     if (!el || !s.lastCard) return;
     el.classList.remove('hidden');
+    if (this._cardShown !== s.lastCard.seq) {
+      this._cardShown = s.lastCard.seq;
+      el.classList.remove('pop');
+      void el.offsetWidth;
+      el.classList.add('pop');
+    }
     el.innerHTML = `<b>${s.lastCard.deck === 'chance' ? '❓' : '🎁'} ${DECK_LABEL[s.lastCard.deck]}</b><br>${esc(s.lastCard.text)}`;
   },
 
+  // Botões de decisão no centro do tabuleiro (rolar e encerrar turno ficam nos dados e na aba lateral)
   actionButtons(s, me, myTurn) {
     const btn = (act, label, cls = 'btn-primary', dis = false) => `<button class="btn ${cls}" data-act="${act}" ${dis ? 'disabled' : ''}>${label}</button>`;
-    if (s.phase === 'order') return me && s.orderPending.includes(me.id) ? btn('rollOrder', '🎲 Rolar para definir a ordem') : '';
     if (!myTurn) return '';
-    // Negociar: na vez do jogador, fora de decisões pendentes (compra/construção)
-    const tradeBtn = s.trade && s.trade.from === me.id ? btn('cancelTrade', '✖ Cancelar proposta', 'btn-secondary')
-      : s.trade || s.turnos.length < 2 ? '' : btn('openTrade', '🤝 Negociar', 'btn-secondary');
+    const cancel = s.trade && s.trade.from === me.id ? btn('cancelTrade', '✖ Cancelar proposta', 'btn-secondary') : '';
     switch (s.phase) {
       case 'build': {
         const t = tileAt(s, s.pendingBuild);
@@ -1018,27 +1024,38 @@ const UI = {
           + btn('skipBuild', 'Agora não', 'btn-secondary');
       }
       case 'roll':
-        if (me.preso) {
-          return btn('roll', '🎲 Tentar dupla') + btn('payJail', `Pagar fiança ${fmt(jailFine(s))}`, 'btn-secondary', me.saldo < jailFine(s))
-            + (me.cartasSaida ? btn('useJailCard', `Usar Habeas Corpus (${me.cartasSaida})`, 'btn-secondary') : '') + tradeBtn;
-        }
-        return btn('roll', '🎲 Rolar Dados') + tradeBtn;
+        return (me.preso ? btn('payJail', `Pagar fiança ${fmt(jailFine(s))}`, 'btn-secondary', me.saldo < jailFine(s))
+          + (me.cartasSaida ? btn('useJailCard', `Usar Habeas Corpus (${me.cartasSaida})`, 'btn-secondary') : '') : '') + cancel;
       case 'buy': {
         const t = tileAt(s, s.pendingBuy);
         return btn('buy', `Comprar ${fmt(t.price)}`, 'btn-primary', me.saldo < t.price) + btn('decline', 'Recusar', 'btn-secondary');
       }
       case 'debt':
-        return btn('payDebt', `Pagar ${fmt(s.debt.amount)}`, 'btn-primary', me.saldo < s.debt.amount) + btn('bankrupt', 'Declarar falência', 'btn-danger') + tradeBtn;
+        return btn('payDebt', `Pagar ${fmt(s.debt.amount)}`, 'btn-primary', me.saldo < s.debt.amount) + btn('bankrupt', 'Declarar falência', 'btn-danger') + cancel;
       case 'end':
-        return btn('endTurn', 'Encerrar turno ⏭') + tradeBtn;
+        return cancel;
     }
     return '';
+  },
+
+  // Dados clicáveis e aba de encerrar turno (à direita)
+  renderControls(s, me, myTurn) {
+    const dice = this.$('dice'), tab = this.$('end-tab');
+    const order = s.phase === 'order' && !!me && s.orderPending.includes(me.id);
+    const canRoll = order || (myTurn && s.phase === 'roll');
+    dice.disabled = !canRoll;
+    dice.dataset.act = order ? 'rollOrder' : 'roll';
+    dice.classList.toggle('can-roll', canRoll);
+    this.$('dice-hint').textContent = !canRoll ? '' : me.preso && !order ? 'Clique nos dados (ou espaço) para tentar uma dupla' : 'Clique nos dados ou aperte espaço';
+    const ready = myTurn && s.phase === 'end';
+    tab.disabled = !ready;
+    tab.classList.toggle('ready', ready);
   },
 
   renderSidebar(s, me, cur, myTurn) {
     const actions = this.actionButtons(s, me, myTurn);
     let hint = '';
-    if (s.phase === 'order') hint = actions ? 'Quem tirar mais nos dados começa. Empates rolam de novo.' : 'Aguardando os outros rolarem…';
+    if (s.phase === 'order') hint = me && s.orderPending.includes(me.id) ? 'Role os dados: quem tirar mais começa. Empates rolam de novo.' : 'Aguardando os outros rolarem…';
     if (s.trade && s.phase !== 'gameover') {
       const a = pById(s, s.trade.from), b = pById(s, s.trade.to);
       hint += `${hint ? '<br>' : ''}🤝 Proposta de <b>${esc(a.nome)}</b> para <b>${esc(b.nome)}</b> aguardando resposta…`;
@@ -1152,13 +1169,6 @@ const UI = {
         </button>`).join('') || '<p class="hint">Nenhuma propriedade.</p>'}</div>
       ${p.cartasSaida ? `<p class="mb-3 text-sm">🎫 Habeas Corpus ×${p.cartasSaida}</p>` : ''}
       <div class="flex flex-wrap items-center gap-2">${trade}<button class="btn btn-secondary" data-close>Fechar</button></div>`);
-  },
-
-  renderLog(s) {
-    const el = this.$('log');
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    el.innerHTML = s.log.map(e => `<div class="log-line">${esc(e.msg)}</div>`).join('');
-    if (atBottom) el.scrollTop = el.scrollHeight;
   },
 
   /* ---------- Modais ---------- */
@@ -1282,17 +1292,8 @@ const UI = {
         <button class="btn btn-primary w-full" data-close>Começar!</button>`);
     }
 
-    // Carta tirada (mostrada a todos)
-    if (s.lastCard && s.lastCard.seq !== this.lastCardSeq) {
-      const firstRender = this.lastCardSeq === 0 && this.lastRollSeq === s.rollSeq && !this._seenAny;
-      this.lastCardSeq = s.lastCard.seq;
-      const who = pById(s, s.lastCard.playerId);
-      if (!firstRender && !['tile', 'tradeEdit', 'player'].includes(this.modalKind)) {
-        this.openModal('card', `<div class="card-face"><b>${DECK_LABEL[s.lastCard.deck]}</b> — ${esc(who ? who.nome : '')}<p class="text-lg my-3">${esc(s.lastCard.text)}</p></div>
-          <button class="btn btn-primary" data-close>OK</button>`);
-      }
-    }
-    this._seenAny = true;
+    // Carta tirada: aparece só no centro do tabuleiro (sem alerta); registra para não reaparecer no modal de compra/dívida
+    if (s.lastCard) this.lastCardSeq = s.lastCard.seq;
     if (this.modalKind === 'tile') this.openTileModal(this.openTile);
     if (this.modalKind === 'player') this.openPlayerModal(this.openPlayerId);
   },
@@ -1447,7 +1448,6 @@ const UI = {
       if (act && !act.disabled) {
         const a = act.dataset.act;
         if (a === 'newGame') { Net.leave(); return; }
-        if (a === 'openTrade') { this.openTradeEditor(); return; }
         if (a === 'sendTrade') { this.sendTrade(); return; }
         Net.act(a, act.dataset.idx !== undefined ? { idx: Number(act.dataset.idx) } : {});
         if (this.modalKind === 'card') this.closeModal();
@@ -1464,6 +1464,14 @@ const UI = {
     // Trocar o jogador da proposta recarrega a lista de propriedades dele
     document.addEventListener('change', e => { if (e.target.id === 'tr-to') this.openTradeEditor(e.target.value); });
     document.addEventListener('keydown', e => {
+      if (e.code === 'Space' && !this.modalKind && !this.$('screen-game').classList.contains('hidden') && !e.target.closest('input, select, textarea')) {
+        e.preventDefault();
+        if (e.target.closest('button')) e.target.blur();   // não "clica" no botão que estava em foco
+        if (e.repeat) return;
+        const b = [this.$('dice'), this.$('end-tab')].find(x => !x.disabled);
+        if (b) b.click();
+        return;
+      }
       if (e.key === 'Escape' && ['card', 'tile', 'tradeEdit', 'player'].includes(this.modalKind)) this.closeModal();
       // Mantém o foco do teclado dentro do modal aberto
       if (e.key === 'Tab' && this.modalKind) {
