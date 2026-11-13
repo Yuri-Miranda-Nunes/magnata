@@ -28,6 +28,34 @@ const MAX_PLAYERS = 8;
 const PAWN_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#f97316', '#ec4899', '#14b8a6'];
 const SESSION_PREFIX = 'magnata-sessao-';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// O estado completo passa de 16 KB com 5+ jogadores, e o canal "json" do PeerJS recusa mensagens
+// desse tamanho (a divisão automática do canal "binary" também falhou nos testes).
+// Por isso cada mensagem é dividida aqui em pedaços pequenos; o canal é ordenado e confiável,
+// então quem recebe só junta os pedaços em sequência.
+const CONN_OPTS = { reliable: true, serialization: 'json' };
+const CHUNK_CHARS = 3000;   // mesmo com escapes e acentos fica bem abaixo de 16 KB
+function wire(conn) {
+  const send = conn.send.bind(conn);
+  conn.send = msg => {
+    const text = JSON.stringify(msg);
+    const n = Math.max(1, Math.ceil(text.length / CHUNK_CHARS));
+    for (let i = 0; i < n; i++) send({ k: 'p', i, n, d: text.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS) });
+  };
+  let buf = '';
+  conn.on('data', raw => {
+    if (!raw || raw.k !== 'p' || typeof raw.d !== 'string') return;   // conteúdo inválido é ignorado
+    if (raw.i === 0) buf = '';
+    buf += raw.d;
+    if (buf.length > 2e6) { buf = ''; return; }                        // proteção contra mensagens absurdas
+    if (raw.i !== raw.n - 1) return;
+    let msg = null;
+    try { msg = JSON.parse(buf); } catch { msg = null; }
+    buf = '';
+    if (msg && typeof msg === 'object') conn.emit('msg', msg);
+  });
+  return conn;
+}
 const randomCode = n => Array.from({ length: n }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
 
 const Net = {
@@ -110,7 +138,15 @@ const Net = {
   inviteCode() { return this.hostId ? this.hostId.slice(PEER_PREFIX.length) : this.roomCode; },
 
   /* ---------------- Lobby ---------------- */
+  // Sala nova: nada de uma partida anterior (sessão retomada que falhou) pode sobrar
+  resetRoom() {
+    if (this.peer) this.peer.destroy();
+    this.peer = null;
+    Object.assign(this, { state: null, lobby: [], isHost: false, hostId: null, hostConn: null, conns: new Map(), lastSeen: new Map(), _probe: null });
+  },
+
   async createRoom() {
+    this.resetRoom();
     for (let i = 0; i < 5; i++) {
       const code = randomCode(5);
       try {
@@ -130,6 +166,7 @@ const Net = {
   },
 
   async joinRoom(input) {
+    this.resetRoom();
     const raw = input.trim();
     const target = raw.startsWith(PEER_PREFIX) ? raw : PEER_PREFIX + raw.toUpperCase();
     this.roomCode = target.slice(PEER_PREFIX.length).split('-')[0];
@@ -337,7 +374,7 @@ const Net = {
    */
   connectTo(id, deadHost = null) {
     return new Promise(resolve => {
-      const conn = this.peer.connect(id, { reliable: true, serialization: 'json' });
+      const conn = wire(this.peer.connect(id, CONN_OPTS));
       let done = false;
       const end = r => {
         if (done) return;
@@ -351,7 +388,7 @@ const Net = {
       const token = {};
       this._pending = { id, token, fail: () => end(false) };
       conn.on('open', () => conn.send({ type: 'join', payload: { id: this.myId, name: this.me.name, color: this.me.color, deadHost } }));
-      conn.on('data', msg => {
+      conn.on('msg', msg => {
         if (!msg || typeof msg !== 'object') return;
         if (!done) {
           if (msg.type === 'redirect') return end({ redirect: msg.payload.hostId });
@@ -480,11 +517,11 @@ const Net = {
     if (pr.busy || Date.now() - (pr.at || 0) < 5000) return;
     pr.busy = true;
     pr.at = Date.now();
-    const conn = this.peer.connect(pr.id, { reliable: true, serialization: 'json' });
+    const conn = wire(this.peer.connect(pr.id, CONN_OPTS));
     let handed = false;
     setTimeout(() => { pr.busy = false; if (!handed) conn.close(); }, 4000);
     conn.on('open', () => conn.send({ type: 'join', payload: { id: this.myId, name: this.me.name, color: this.me.color } }));
-    conn.on('data', msg => {
+    conn.on('msg', msg => {
       if (handed) { this.onHostData(conn, msg); return; }
       if (!msg || !['start-game', 'update-state', 'players-list'].includes(msg.type) || !this.isHost) { conn.close(); return; }
       handed = true;
@@ -511,7 +548,8 @@ const Net = {
 
   /* ================= QUALQUER PEER ================= */
   onIncoming(conn) {
-    conn.on('data', msg => (this.isHost ? this.hostReceive(conn, msg) : this.nonHostReceive(conn, msg)));
+    wire(conn);
+    conn.on('msg', msg => (this.isHost ? this.hostReceive(conn, msg) : this.nonHostReceive(conn, msg)));
     conn.on('close', () => { if (this.isHost && this.conns.get(conn.peer) === conn) this.peerGone(conn.peer, false); });
   },
 

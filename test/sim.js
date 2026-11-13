@@ -296,4 +296,32 @@ const started = n => {
   assert(G.applyAction(s, first, 'endTurn'), 'não pode encerrar antes de rolar');
   console.log('✔ validação de vez e fase');
 }
+// 13) Transporte: mensagens grandes são divididas em pedaços abaixo do limite do canal e remontadas iguais
+{
+  const pctx = vm.createContext({ console, window: { addEventListener() {} } });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'peer.js'), 'utf8'), pctx, { filename: 'peer.js' });
+  const wire = vm.runInContext('wire', pctx);
+  const sent = [], got = [];
+  const conn = {
+    h: {},
+    on(e, f) { (this.h[e] = this.h[e] || []).push(f); },
+    emit(e, x) { (this.h[e] || []).forEach(f => f(x)); },
+    send(x) { sent.push(JSON.parse(JSON.stringify(x))); },
+  };
+  wire(conn);
+  conn.on('msg', m => got.push(m));
+  const s = G.createGame(Array.from({ length: 8 }, (_, i) => ({ id: 'magnata-tab-ABCDE-' + i, name: 'Jogador ção 🎲' + i, color: '#fff' })), 45);
+  const big = { type: 'update-state', payload: s };
+  conn.send(big);
+  assert(sent.length > 1, 'mensagem grande deveria ser dividida');
+  for (const c of sent) assert(Buffer.byteLength(JSON.stringify(c)) < 16300, 'pedaço acima do limite do canal');
+  sent.forEach(c => conn.emit('data', c));
+  assert.strictEqual(got.length, 1);
+  assert.strictEqual(JSON.stringify(got[0]), JSON.stringify(big));   // compara conteúdo (objetos vêm de outro contexto vm)
+  conn.emit('data', { k: 'p', i: 0, n: 1, d: '{quebrado' });          // lixo é ignorado sem erro
+  conn.emit('data', 'texto solto');
+  assert.strictEqual(got.length, 1);
+  console.log(`✔ transporte: ${sent.length} pedaços < 16 KB, remontagem idêntica`);
+}
+
 console.log('Todos os testes passaram.');
