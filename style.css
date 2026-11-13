@@ -46,7 +46,7 @@ body {
 .btn:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
 .btn:hover:not(:disabled) { filter: brightness(1.12); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn:focus-visible, .btn-mini:focus-visible, .swatch:focus-visible, .prop-row:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; }
+.btn:focus-visible, .btn-mini:focus-visible, .swatch:focus-visible, .prop-row:focus-visible, .pcard:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; }
 .btn-primary { background: linear-gradient(180deg, #10b981, #047857); color: #fff; }
 .btn-secondary { background: linear-gradient(180deg, #64748b, #334155); color: #fff; }
 .btn-danger { background: linear-gradient(180deg, #ef4444, #991b1b); color: #fff; }
@@ -73,18 +73,23 @@ body {
 }
 
 /* ---------- Tabuleiro (CSS Grid proporcional ao nº de casas) ---------- */
-#board-wrap {
-  display: flex; cursor: grab;
+.board-area {
+  grid-area: board; position: relative; min-height: 0; min-width: 0; border-radius: 1rem; overflow: hidden;
   background: radial-gradient(circle at 50% 40%, #1b2a44, #0b1120 70%);
+  border: 1px solid var(--line);
 }
-#board-wrap:active { cursor: grabbing; }
+.board-wrap { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; }
+.board-wrap:active { cursor: grabbing; }
+/* A câmera move o tabuleiro inteiro por transform; a transição deixa o acompanhamento suave */
 .board {
+  position: absolute; left: 0; top: 0; transform-origin: 0 0;
+  transition: transform .65s cubic-bezier(.25, .8, .3, 1);
   --cell: 48px;
   --corner: calc(var(--cell) * 1.6);
   display: grid;
   grid-template-columns: var(--corner) repeat(var(--side), var(--cell)) var(--corner);
   grid-template-rows: var(--corner) repeat(var(--side), var(--cell)) var(--corner);
-  gap: 2px; padding: 6px; margin: auto;
+  gap: 2px; padding: 6px;
   background: #0d3b23;
   border: calc(var(--cell) * .18) solid #6b3f1d;
   border-radius: 14px;
@@ -145,10 +150,11 @@ body {
   color: #fff; font-weight: 900; font-size: calc(var(--cell) * .2); text-shadow: 0 1px 2px #000;
 }
 .token-active { animation: pulse 1.1s ease-in-out infinite; z-index: 2; }
-.token-hop { animation: hop .17s ease-out; z-index: 3; }
+.token-hop { animation: hop .3s ease-out; z-index: 3; }
+.board.cam-instant { transition: none; }
 .token-away { opacity: .45; filter: grayscale(.7); }
 @keyframes pulse { 50% { transform: scale(1.18); box-shadow: 0 0 0 3px rgba(253, 224, 71, .6), 0 0 14px 4px #fde047; } }
-@keyframes hop { 0% { transform: translateY(0) scale(1); } 45% { transform: translateY(-45%) scale(1.15); } 100% { transform: translateY(0) scale(1); } }
+@keyframes hop { 0% { transform: translateY(0) scale(1); } 45% { transform: translateY(-55%) scale(1.2); } 100% { transform: translateY(0) scale(1); } }
 
 /* Centro do tabuleiro: feltro, logo, dados e informações */
 .board-center {
@@ -203,48 +209,145 @@ body {
   transform: rotate(-1.5deg);
 }
 
-.zoom-controls { position: absolute; left: 8px; bottom: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 5; }
+.zoom-controls { position: absolute; left: 8px; top: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 5; }
 .zoom-controls button {
   width: 40px; height: 40px; border-radius: 10px; background: rgba(15, 23, 42, .9); border: 1px solid #334155;
   font-size: 1.2rem; color: #fff; box-shadow: 0 3px 8px rgba(0, 0, 0, .4);
 }
 .zoom-controls button:hover { background: #1e293b; }
 
-/* ---------- Sidebar ---------- */
-.sidebar {
-  width: 360px; flex-shrink: 0; display: flex; flex-direction: column; gap: .6rem; padding: .6rem;
-  background: linear-gradient(180deg, #0f172a, #0b1120); border-left: 1px solid var(--line); overflow-y: auto;
+/* ---------- Layout da partida ----------
+ * tabuleiro no centro · jogadores, música e eventos à direita · carteira e cartas embaixo */
+.game-layout {
+  flex: 1; min-height: 0; display: grid; gap: .6rem; padding: .6rem;
+  grid-template-columns: clamp(130px, 12vw, 175px) 1fr clamp(230px, 22vw, 300px);
+  grid-template-rows: minmax(0, 1fr) clamp(140px, 22vh, 185px);
+  grid-template-areas: "board board side" "wallet hand hand";
 }
+.side { grid-area: side; display: flex; flex-direction: column; gap: .6rem; min-height: 0; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: .9rem; padding: .75rem; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
 .panel-title { font-size: .7rem; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; color: #fbbf24; margin-bottom: .5rem; }
 .hint { color: #94a3b8; font-size: .85rem; margin-top: .35rem; }
 
-.wallet {
-  --pc: #10b981;
-  border-radius: .8rem; padding: .7rem .8rem; color: #fff;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--pc) 70%, #000), color-mix(in srgb, var(--pc) 35%, #0b1120));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2), 0 6px 14px rgba(0, 0, 0, .35);
+/* Ações do jogador: no centro do tabuleiro, como numa mesa */
+.actions {
+  max-width: 94%; padding: .5rem .7rem; border-radius: 1rem; text-align: center; color: #fff;
+  background: rgba(11, 17, 32, .7); border: 1px solid rgba(253, 230, 138, .2); box-shadow: 0 8px 22px rgba(0, 0, 0, .45);
 }
-.wallet-money { font-size: 1.9rem; font-weight: 900; letter-spacing: .01em; text-shadow: 0 2px 0 rgba(0, 0, 0, .3); font-variant-numeric: tabular-nums; }
+.actions:empty { display: none; }
+.actions-row { display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem; }
+.actions .hint { margin: 0; }
+.actions-row + .hint { margin-top: .4rem; }
 
-.player-card {
-  --pc: #888;
-  position: relative; display: flex; align-items: center; gap: .55rem; padding: .45rem .55rem; margin-bottom: .35rem;
-  border-radius: .7rem; background: var(--panel-2); border-left: 4px solid var(--pc);
-  transition: background .2s, box-shadow .2s;
+/* Jogadores: barra com nome e dinheiro + avatar redondo */
+.players { display: flex; flex-direction: column; gap: .5rem; overflow-y: auto; max-height: 55%; padding: 4px 4px 4px 0; flex-shrink: 0; }
+.pchip { --pc: #888; position: relative; display: flex; align-items: center; width: 100%; text-align: left; flex-shrink: 0; }
+.pchip-bar {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; margin-right: -1.6rem; padding: .35rem 2rem .35rem .8rem;
+  border-radius: .8rem 0 0 .8rem; border: 1px solid var(--line); border-right: 0;
+  background: linear-gradient(90deg, var(--panel-2), color-mix(in srgb, var(--pc) 28%, var(--panel-2)));
+  transition: filter .15s, border-color .2s;
 }
-.player-card.is-turn { background: color-mix(in srgb, var(--pc) 22%, var(--panel-2)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--pc) 70%, transparent), 0 0 16px color-mix(in srgb, var(--pc) 35%, transparent); }
-.player-card.is-out { opacity: .45; filter: grayscale(.8); }
-.player-pos { width: 1.4rem; text-align: center; font-weight: 900; color: #64748b; font-size: .85rem; }
-.player-money { font-weight: 800; font-variant-numeric: tabular-nums; font-size: .9rem; }
+.pchip-name { font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pchip-money { font-weight: 800; font-size: .9rem; color: #fde68a; font-variant-numeric: tabular-nums; }
+.pchip-avatar {
+  --size: 3.2rem;
+  position: relative; z-index: 1; flex-shrink: 0; width: var(--size); height: var(--size); border-radius: 9999px;
+  display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 1.3rem; color: #fff; text-shadow: 0 1px 2px #000;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, .55), transparent 45%), var(--pc);
+  border: 3px solid #fff; box-shadow: inset 0 -4px 0 rgba(0, 0, 0, .25), 0 4px 10px rgba(0, 0, 0, .45);
+  transition: box-shadow .2s, transform .15s;
+}
+.pchip-badge {
+  position: absolute; right: -6px; top: -6px; font-size: .7rem; line-height: 1; padding: .15rem .25rem; border-radius: 9999px;
+  background: #0b1120; border: 1px solid #475569; text-shadow: none; white-space: nowrap;
+}
+.pchip:hover .pchip-bar { filter: brightness(1.18); }
+.pchip:hover .pchip-avatar { transform: scale(1.06); }
+.pchip:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; border-radius: .8rem; }
+.pchip.is-turn .pchip-bar { border-color: #fde047; }
+.pchip.is-turn .pchip-avatar { box-shadow: 0 0 0 3px #fde047, 0 0 18px 5px rgba(253, 224, 71, .55); }
+.pchip.is-out { opacity: .45; filter: grayscale(.8); }
 .you { font-size: .65rem; background: #fbbf24; color: #000; border-radius: 9999px; padding: 0 .4rem; vertical-align: middle; font-weight: 800; }
+.stat { background: var(--panel-2); border-radius: .7rem; padding: .5rem .7rem; display: flex; flex-direction: column; }
+.stat span { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; }
+.stat b { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+
 .money-float {
-  position: absolute; right: .6rem; top: -.2rem; font-weight: 900; font-size: .9rem; pointer-events: none;
+  position: absolute; right: .6rem; top: -.2rem; z-index: 3; font-weight: 900; font-size: .9rem; pointer-events: none;
   animation: float-up 1.8s ease-out forwards; text-shadow: 0 1px 3px #000;
 }
 .money-float.up { color: #34d399; }
 .money-float.down { color: #f87171; }
 @keyframes float-up { 0% { transform: translateY(8px); opacity: 0; } 15% { opacity: 1; } 100% { transform: translateY(-22px); opacity: 0; } }
+
+/* Música */
+.music-btn { display: flex; align-items: center; gap: .5rem; align-self: flex-end; color: #cbd5e1; font-weight: 700; font-size: .85rem; }
+.music-icon {
+  width: 2.8rem; height: 2.8rem; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;
+  background: var(--panel-2); border: 2px solid var(--line); box-shadow: 0 4px 10px rgba(0, 0, 0, .35); transition: border-color .2s, box-shadow .2s;
+}
+.music-btn:hover .music-icon { filter: brightness(1.2); }
+.music-btn[aria-pressed="true"] .music-icon { border-color: #10b981; box-shadow: 0 0 14px rgba(16, 185, 129, .5); }
+.music-btn:focus-visible { outline: 3px solid #fde047; outline-offset: 2px; border-radius: 9999px; }
+
+/* Eventos */
+.log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.log { flex: 1; min-height: 0; overflow-y: auto; font-size: .8rem; color: #cbd5e1; }
+.log-line { padding: 3px 0; border-bottom: 1px solid #172238; }
+.log-line:last-child { color: #fff; font-weight: 600; }
+
+/* Carteira: dinheiro e patrimônio do jogador local */
+.wallet {
+  --pc: #10b981;
+  grid-area: wallet; align-self: end; justify-self: center; position: relative;
+  width: 100%; max-width: 100%; aspect-ratio: 1; max-height: 100%;
+  border-radius: 9999px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  background: radial-gradient(circle at 35% 25%, color-mix(in srgb, var(--pc) 80%, #fff), color-mix(in srgb, var(--pc) 30%, #0b1120) 75%);
+  border: 4px solid var(--pc); box-shadow: inset 0 0 30px rgba(0, 0, 0, .45), 0 10px 25px rgba(0, 0, 0, .5);
+}
+.wallet-label { font-size: .62rem; text-transform: uppercase; letter-spacing: .1em; opacity: .8; }
+.wallet-money { font-size: clamp(1rem, 1.6vw, 1.45rem); font-weight: 900; line-height: 1.1; margin-bottom: .3rem; text-shadow: 0 2px 0 rgba(0, 0, 0, .35); font-variant-numeric: tabular-nums; }
+.wallet-worth { font-size: clamp(.8rem, 1.1vw, 1rem); font-weight: 800; color: #fde68a; font-variant-numeric: tabular-nums; }
+.wallet .money-float { right: 50%; transform: translateX(50%); }
+
+/* Mão de cartas (estilo cartas de baralho em leque; levantam ao passar o mouse) */
+.hand {
+  --ov: 30px;
+  grid-area: hand; position: relative; z-index: 8; min-width: 0;
+  display: flex; align-items: flex-end; justify-content: center; padding: 0 12px 14px;
+  border-radius: 1rem; background: linear-gradient(180deg, transparent, rgba(15, 23, 42, .7));
+}
+.hand-empty { align-self: center; }
+.pcard {
+  --gc: #64748b; --rot: 0deg; --lift: 0px;
+  position: relative; flex: 0 0 auto; width: clamp(78px, 7.2vw, 108px); aspect-ratio: 5 / 7;
+  display: flex; flex-direction: column; align-items: center; overflow: hidden; text-align: center; cursor: pointer;
+  background: linear-gradient(180deg, #fffdf6, #ece4d2); color: #1c1917;
+  border: 3px solid #fff; border-radius: 12px;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(0, 0, 0, .12);
+  transform: translateY(var(--lift)) rotate(var(--rot)); transform-origin: 50% 130%;
+  transition: transform .2s cubic-bezier(.3, 1.4, .5, 1), box-shadow .2s;
+}
+.pcard + .pcard { margin-left: calc(-1 * var(--ov)); }
+.pcard:hover, .pcard:focus-visible {
+  transform: translateY(-38px) rotate(0) scale(1.15); z-index: 20; outline: none;
+  box-shadow: 0 18px 32px rgba(0, 0, 0, .6), 0 0 0 3px #fde047;
+}
+.pcard-band {
+  flex: 0 0 26%; width: 100%; display: flex; align-items: center; justify-content: center; font-size: 1.35rem;
+  background: var(--gc); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .2), inset 0 2px 0 rgba(255, 255, 255, .25);
+}
+.pcard-name { font-weight: 800; font-size: .74rem; line-height: 1.1; padding: .35rem .3rem 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; word-break: break-word; }
+.pcard-level { font-size: .75rem; min-height: 1em; margin-top: .15rem; }
+.pcard-price { margin-top: auto; margin-bottom: .35rem; font-size: .72rem; font-weight: 700; color: #57534e; }
+.pcard.mortgaged { filter: grayscale(.75) brightness(.9); }
+.pcard.mortgaged::after {
+  content: 'HIPOTECADA'; position: absolute; top: 48%; left: -10%; right: -10%; transform: rotate(-24deg);
+  background: rgba(185, 28, 28, .88); color: #fff; font-size: .58rem; font-weight: 900; letter-spacing: .08em; padding: .1rem 0;
+}
+.pcard-hc { background: linear-gradient(160deg, #fef3c7, #fbbf24); cursor: default; }
+.pcard-hc .pcard-band { background: linear-gradient(135deg, #b45309, #f59e0b); }
 
 .prop-row { width: 100%; display: flex; align-items: center; gap: .5rem; padding: .35rem .45rem; border-radius: .5rem; font-size: .85rem; background: var(--panel-2); }
 .prop-row:hover { background: #1f2d48; }
@@ -256,28 +359,36 @@ body {
 .trade-item input { accent-color: #10b981; width: 1rem; height: 1rem; flex-shrink: 0; }
 .trade-money { width: 100%; margin-top: .2rem; border-radius: .4rem; background: #0b1120; border: 1px solid #475569; padding: .3rem .5rem; color: #fff; font-size: .9rem; }
 
-.log { flex: 1; min-height: 140px; max-height: 40vh; overflow-y: auto; font-size: .8rem; color: #cbd5e1; }
-.log-line { padding: 3px 0; border-bottom: 1px solid #172238; }
-.log-line:last-child { color: #fff; font-weight: 600; }
-
-.bottom-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: .5rem;
-  padding: .5rem .75rem; background: linear-gradient(180deg, #111a2e, #0b1120); border-top: 1px solid var(--line);
-}
-.bottom-money { font-weight: 900; font-size: 1.1rem; border-left: 4px solid var(--pc); padding-left: .5rem; }
-.bottom-bar .btn { min-height: 40px; padding: .4rem .7rem; font-size: .9rem; }
-.bottom-bar .hint { margin: 0; }
-
-/* Tablet e celular: sidebar vira gaveta colapsável; a barra inferior mostra a ação principal */
-@media (max-width: 1023px) {
-  .sidebar {
-    position: fixed; top: 0; right: 0; bottom: 0; z-index: 30; width: min(360px, 92vw);
-    transform: translateX(100%); transition: transform .25s; box-shadow: -10px 0 30px rgba(0, 0, 0, .5);
+/* Tablet e celular: jogadores numa faixa no topo, tabuleiro no meio, carteira e cartas embaixo */
+@media (max-width: 899px) {
+  .game-layout {
+    gap: .4rem; padding: .4rem;
+    grid-template-columns: 92px 1fr;
+    grid-template-rows: auto minmax(0, 1fr) 118px;
+    grid-template-areas: "side side" "board board" "wallet hand";
   }
-  .sidebar.open { transform: none; }
-}
-@media (min-width: 1024px) {
-  .bottom-bar { display: none; }
+  .side { flex-direction: row; align-items: center; }
+  .players { flex-direction: row; flex: 1; max-height: none; overflow-x: auto; overflow-y: visible; padding: 6px 4px; }
+  .pchip { width: auto; }
+  .pchip-bar { width: 6.5rem; flex: none; padding: .2rem 1.6rem .2rem .55rem; margin-right: -1.3rem; }
+  .pchip-name { font-size: .8rem; }
+  .pchip-money { font-size: .75rem; }
+  .pchip-avatar { --size: 2.5rem; font-size: 1rem; border-width: 2px; }
+  .log-panel { display: none; }
+  .music-label { display: none; }
+  .music-icon { width: 2.4rem; height: 2.4rem; }
+  .wallet { border-width: 3px; }
+  .wallet-label { font-size: .5rem; }
+  .wallet-money { font-size: .85rem; }
+  .wallet-worth { font-size: .72rem; }
+  .pcard { width: 66px; border-width: 2px; border-radius: 9px; }
+  .pcard-name { font-size: .58rem; }
+  .pcard-band { font-size: 1rem; }
+  .pcard-price, .pcard-level { font-size: .58rem; }
+  .pcard:hover, .pcard:focus-visible { transform: translateY(-22px) rotate(0) scale(1.12); }
+  .actions .btn { min-height: 40px; padding: .4rem .7rem; font-size: .9rem; }
+  .zoom-controls { flex-direction: row; }
+  .zoom-controls button { width: 34px; height: 34px; font-size: 1rem; }
 }
 
 /* ---------- Modais e avisos ---------- */
@@ -319,5 +430,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .token-active, .token-hop, .dice-tray.rolling .die, .modal-box, .tile.landed, .banner.show, .money-float { animation: none; }
+  .board, .pcard { transition: none; }
   .banner.show { opacity: 1; }
 }

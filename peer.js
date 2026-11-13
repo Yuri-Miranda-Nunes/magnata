@@ -234,7 +234,8 @@ const Net = {
     const next = s.turnos[s.turnoAtual];
     if (prevTurnId !== undefined && next !== prevTurnId && s.phase !== 'gameover') this.broadcast('end-turn', { nextPlayerId: next });
     this.save();
-    UI.render(s);
+    // Erro ao desenhar a tela nunca pode interromper a lógica de rede do host
+    try { UI.render(s); } catch (e) { console.error(e); }
   },
 
   hostAct(id, action, data = {}) {
@@ -458,7 +459,7 @@ const Net = {
         if (!this.state || payload.seq > this.state.seq || payload.hostId !== this.state.hostId || payload.startedAt !== this.state.startedAt) {
           this.state = hydrate(payload);
           this.save();
-          UI.render(this.state);
+          try { UI.render(this.state); } catch (e) { console.error(e); }
         }
         break;
       case 'end-turn':

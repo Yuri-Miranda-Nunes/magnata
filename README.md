@@ -23,7 +23,8 @@ O diferencial é o **tabuleiro dinâmico**: ele cresce conforme o número de jog
 - **Propriedade livre:** abre um modal para comprar ou recusar.
 - **Propriedade de outro jogador:** você paga aluguel automaticamente. O valor sobe com casas e hotel; conjunto completo sem construções paga aluguel em dobro. Estações cobram pelo número de estações do dono; companhias cobram *dados × multiplicador*.
 - **Construir:** quando você **cai de novo numa propriedade sua**, pode construir uma casa nela (uma por vez que cair). São até 4 casas + 1 hotel, e cada nível custa mais que o anterior. Ter o **conjunto completo da cor** continua dobrando o aluguel das propriedades sem construções.
-- **Trocas:** na sua vez, clique em **🤝 Negociar**, escolha o jogador, marque as propriedades e o dinheiro de cada lado e envie. O outro jogador aceita ou recusa. Propriedades com casas não podem ser trocadas; as hipotecadas vão com a hipoteca. A proposta expira quando a vez passa.
+- **Tela:** tabuleiro no centro (arraste para mover, roda do mouse ou ＋/－ para zoom; a câmera acompanha o peão que está andando). À direita ficam os jogadores, com o dinheiro de cada um; clique num jogador para ver os bens dele e propor uma troca. Embaixo ficam seu dinheiro, seu patrimônio total e suas propriedades como cartas, da mais barata à mais cara (clique numa carta para hipotecar ou vender casas). O botão 🎵 liga e desliga a música.
+- **Trocas:** na sua vez, clique no jogador (ou em **🤝 Negociar**), marque as propriedades e o dinheiro de cada lado e envie. O outro jogador aceita ou recusa. Propriedades com casas não podem ser trocadas; as hipotecadas vão com a hipoteca. A proposta expira quando a vez passa.
 - **Hipoteca:** recebe metade do preço; quitar custa 55% do preço. Hipotecadas não cobram aluguel. Para hipotecar, venda antes as casas daquela propriedade.
 - **Sorte / Cofre Comunitário:** 16 cartas em cada baralho (andar, voltar, ir para o Início, receber ou pagar, prisão, turno extra, Habeas Corpus…).
 - **Prisão:** pague a fiança, use um Habeas Corpus ou tente tirar uma dupla. Na 3ª tentativa sem dupla, a fiança é paga automaticamente e você sai.
@@ -47,6 +48,7 @@ O diferencial é o **tabuleiro dinâmico**: ele cresce conforme o número de jog
 | `board.js`   | Gera o tabuleiro (casas, cores e preços) conforme o nº de jogadores e o desenha em CSS Grid |
 | `game.js`    | Regras (classe `Player`, turnos, aluguel, construção, cartas, prisão, falência) e interface |
 | `peer.js`    | Conexões PeerJS, protocolo de mensagens, eleição de host e reconexão |
+| `music.js`   | Música de fundo gerada na hora com Web Audio (sem arquivos de áudio) |
 | `test/sim.js`| Simulação em Node: bots jogam centenas de partidas e o teste confere invariantes do estado |
 
 **O host é a autoridade única.** Os clientes só enviam intenções (`join`, `roll-dice`, `action`, `disconnect`). O host valida (vez, fase, dono), aplica a regra, sorteia os dados e envia o **estado completo** (`update-state`) para todos, numerado por `seq`. Como nenhum cliente altera o estado localmente, todas as telas mostram sempre o mesmo jogo.

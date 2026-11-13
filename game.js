@@ -759,6 +759,9 @@ function tick(s, now = Date.now()) {
 /* =========================================================================
  * INTERFACE — desenha a tela a partir do estado recebido do Host
  * ========================================================================= */
+const STEP_MS = 320;      // tempo de cada casa andada pelo peão
+const FOLLOW_ZOOM = 1.8;  // aproximação da câmera seguindo o peão
+
 const UI = {
   myId: null,
   zoom: 1,
@@ -842,7 +845,7 @@ const UI = {
     }
     if (this.animating) {
       updateBoardDOM(board, s, this.shownPos, this._movingId);
-      document.querySelectorAll('#turn-panel [data-act], #bottom-bar [data-act]').forEach(b => { b.disabled = true; });
+      document.querySelectorAll('#actions [data-act]').forEach(b => { b.disabled = true; });
       // Compra/dívida que já não vale no host não pode continuar aberta durante a animação
       const mine = currentPlayer(s) && currentPlayer(s).id === this.myId;
       const still = { buy: mine && s.phase === 'buy', debt: mine && s.phase === 'debt', build: mine && s.phase === 'build', trade: !!(s.trade && s.trade.to === this.myId) };
@@ -878,22 +881,24 @@ const UI = {
         if (m.jump) {
           this.shownPos[m.playerId] = m.to;
           updateBoardDOM(board, this.state, this.shownPos, m.playerId);
+          this.camFollow(m.to);
           this.pulseTile(m.to);
-          await wait(450);
+          await wait(700);
           continue;
         }
         const dir = Math.sign(m.steps);
         for (let k = 1; k <= Math.abs(m.steps) && live(); k++) {
           this.shownPos[m.playerId] = ((m.from + dir * k) % N + N) % N;
           updateBoardDOM(board, this.state, this.shownPos, m.playerId);
-          if (window.innerWidth < 768) this.focusTile(this.shownPos[m.playerId]);
-          await wait(170);
+          this.camFollow(this.shownPos[m.playerId]);
+          await wait(STEP_MS);
         }
         if (!live()) break;
         this.pulseTile(this.shownPos[m.playerId]);
-        await wait(300);
+        await wait(600);
       }
     }
+    this.camHome(true);
     this._movingId = null;
     this._wakeAnim = null;
     this.animating = false;
@@ -940,7 +945,6 @@ const UI = {
     if (cur && cur.id !== this.lastTurnId) {
       this.lastTurnId = cur.id;
       if (myTurn) this.banner('🎲 Sua vez!');
-      if (window.innerWidth < 768) this.focusTile(cur.posicao);
     }
   },
 
@@ -1033,65 +1037,121 @@ const UI = {
 
   renderSidebar(s, me, cur, myTurn) {
     const actions = this.actionButtons(s, me, myTurn);
-    let waiting = '';
-    if (s.phase === 'gameover') waiting = '<p class="text-amber-300">Partida encerrada.</p>';
-    else if (s.phase === 'order') waiting = actions ? '<p class="hint">Quem tirar mais nos dados começa. Empates rolam de novo.</p>' : '<p class="hint">Aguardando os outros rolarem…</p>';
-    else if (!myTurn && cur) waiting = `<p class="hint">Aguardando <b style="color:${esc(cur.corPeao)}">${esc(cur.nome)}</b>…</p>`;
-    this.$('turn-title').textContent = s.phase === 'order' ? 'Sorteio da ordem' : myTurn ? 'Sua vez!' : 'Jogada';
+    let hint = '';
+    if (s.phase === 'order') hint = actions ? 'Quem tirar mais nos dados começa. Empates rolam de novo.' : 'Aguardando os outros rolarem…';
     if (s.trade && s.phase !== 'gameover') {
       const a = pById(s, s.trade.from), b = pById(s, s.trade.to);
-      waiting += `<p class="hint">🤝 Proposta de troca de <b>${esc(a.nome)}</b> para <b>${esc(b.nome)}</b> aguardando resposta…</p>`;
+      hint += `${hint ? '<br>' : ''}🤝 Proposta de <b>${esc(a.nome)}</b> para <b>${esc(b.nome)}</b> aguardando resposta…`;
     }
-    this.$('turn-panel').innerHTML = `<div class="flex flex-wrap gap-2">${actions}</div>${waiting}`;
-    this.$('bottom-bar').innerHTML = me
-      ? `<span class="bottom-money" style="--pc:${esc(me.corPeao)}">${fmt(me.saldo)}</span><div class="flex gap-2">${actions || waiting}</div>` : '';
+    this.$('actions').innerHTML = (actions ? `<div class="actions-row">${actions}</div>` : '') + (hint ? `<p class="hint">${hint}</p>` : '');
 
-    // Painel do jogador local: saldo e propriedades
-    if (me) {
-      const props = me.propriedades.map(i => tileAt(s, i)).sort((a, b) => a.id - b.id);
-      this.$('me-panel').innerHTML = `
-        <div class="wallet" style="--pc:${esc(me.corPeao)}">
-          <div class="flex items-center gap-2">
-            <span class="token-static" style="background:${esc(me.corPeao)}">${esc(me.nome.charAt(0).toUpperCase())}</span>
-            <b class="truncate">${esc(me.nome)}</b>${me.bancarroto ? ' <span class="text-red-300">(falido)</span>' : ''}${me.preso ? ' 🔒' : ''}
-          </div>
-          <div class="wallet-money">${fmt(me.saldo)}</div>
-          <div class="text-xs opacity-80">Patrimônio ${fmt(netWorth(s, me))}${me.cartasSaida ? ` · 🎫 Habeas Corpus ×${me.cartasSaida}` : ''}</div>
-        </div>
-        <div class="space-y-1 mt-2">${props.length ? props.map(t => `
-          <button class="prop-row" data-open="${t.id}">
-            <span class="prop-swatch" style="background:${t.colorGroup ? s.board.groups[t.colorGroup].color : '#94a3b8'}"></span>
-            <span class="flex-1 text-left truncate">${esc(t.name)}</span>
-            <span class="text-xs">${t.mortgage ? '<span class="text-red-400">HIPOTECADA</span>' : (t.level === 5 ? '🏨' : '🏠'.repeat(t.level))}</span>
-          </button>`).join('') : '<p class="hint">Nenhuma propriedade ainda.</p>'}</div>`;
-    }
+    // Carteira (canto inferior esquerdo) e mão de cartas
+    const wallet = this.$('wallet');
+    wallet.style.setProperty('--pc', me ? me.corPeao : '#10b981');
+    wallet.innerHTML = me ? `<span class="wallet-label">Dinheiro</span><b class="wallet-money">${fmt(me.saldo)}</b>
+      <span class="wallet-label">Patrimônio total</span><b class="wallet-worth">${me.bancarroto ? 'falido' : fmt(netWorth(s, me))}</b>` : '';
+    this.renderHand(s, me);
 
-    // Jogadores na ordem dos turnos (falidos por último)
+    // Jogadores na ordem dos turnos (falidos por último); clique abre os detalhes
     const ordered = [...s.turnos.map(id => pById(s, id)), ...s.players.filter(p => !s.turnos.includes(p.id))];
     const panel = this.$('players-panel');
-    panel.innerHTML = ordered.map((p, i) => `
-      <div class="player-card ${cur && cur.id === p.id ? 'is-turn' : ''} ${p.bancarroto ? 'is-out' : ''}" style="--pc:${esc(p.corPeao)}" data-pid="${esc(p.id)}">
-        <span class="player-pos">${p.bancarroto ? '💀' : (s.phase === 'order' ? '' : i + 1)}</span>
-        <span class="token-static" style="background:${esc(p.corPeao)}">${esc(p.nome.charAt(0).toUpperCase())}</span>
-        <div class="flex-1 min-w-0">
-          <div class="truncate font-semibold">${esc(p.nome)}${p.id === this.myId ? ' <span class="you">você</span>' : ''}${p.conectado || p.bancarroto ? '' : ` <span class="text-amber-300 text-xs" title="Desconectado: volta entrando com o mesmo nome">📴 ${Math.max(0, Math.ceil((RECONNECT_GRACE_MS - (p.ausenteMs || 0)) / 1000))}s</span>`}${p.preso ? ' 🔒' : ''}</div>
-          <div class="text-xs text-slate-400">${p.bancarroto ? 'falido' : `${p.propriedades.length} propriedade${p.propriedades.length === 1 ? '' : 's'}`}</div>
-        </div>
-        <span class="player-money">${fmt(p.saldo)}</span>
-      </div>`).join('');
+    panel.innerHTML = ordered.map(p => {
+      const badge = p.bancarroto ? '💀' : !p.conectado
+        ? `📴${Math.max(0, Math.ceil((RECONNECT_GRACE_MS - (p.ausenteMs || 0)) / 1000))}s` : p.preso ? '🔒' : '';
+      return `<button class="pchip ${cur && cur.id === p.id ? 'is-turn' : ''} ${p.bancarroto ? 'is-out' : ''}" style="--pc:${esc(p.corPeao)}" data-player="${esc(p.id)}" data-pid="${esc(p.id)}"
+          title="${!p.conectado && !p.bancarroto ? 'Desconectado: volta entrando com o mesmo nome' : 'Ver detalhes'}">
+        <span class="pchip-bar"><span class="pchip-name">${esc(p.nome)}${p.id === this.myId ? ' <span class="you">você</span>' : ''}</span>
+          <span class="pchip-money">${p.bancarroto ? 'falido' : fmt(p.saldo)}</span></span>
+        <span class="pchip-avatar">${esc(p.nome.charAt(0).toUpperCase())}${badge ? `<span class="pchip-badge">${badge}</span>` : ''}</span>
+      </button>`;
+    }).join('');
     // Dinheiro que entrou ou saiu desde a última atualização
     for (const p of s.players) {
       const prev = this.prevSaldo[p.id];
       this.prevSaldo[p.id] = p.saldo;
       if (prev === undefined || prev === p.saldo) continue;
-      const row = [...panel.querySelectorAll('[data-pid]')].find(r => r.dataset.pid === p.id);
-      if (!row) continue;
-      const f = document.createElement('span');
-      f.className = 'money-float ' + (p.saldo > prev ? 'up' : 'down');
-      f.textContent = (p.saldo > prev ? '+' : '−') + fmt(Math.abs(p.saldo - prev));
-      row.appendChild(f);
-      setTimeout(() => f.remove(), 1800);
+      const rows = [...panel.querySelectorAll('[data-pid]')].filter(r => r.dataset.pid === p.id);
+      if (p.id === this.myId) rows.push(wallet);
+      for (const row of rows) {
+        const f = document.createElement('span');
+        f.className = 'money-float ' + (p.saldo > prev ? 'up' : 'down');
+        f.textContent = (p.saldo > prev ? '+' : '−') + fmt(Math.abs(p.saldo - prev));
+        row.appendChild(f);
+        setTimeout(() => f.remove(), 1800);
+      }
     }
+  },
+
+  // Propriedades do jogador local como cartas na mão (da mais barata à mais cara) + Habeas Corpus
+  renderHand(s, me) {
+    const el = this.$('hand');
+    const props = me ? me.propriedades.map(i => tileAt(s, i)).sort((a, b) => a.price - b.price || a.id - b.id) : [];
+    const n = props.length + (me ? me.cartasSaida || 0 : 0);
+    const mid = (n - 1) / 2, spread = Math.min(4, 36 / Math.max(n, 1));
+    const fan = i => `--rot:${((i - mid) * spread).toFixed(2)}deg;--lift:${(Math.abs(i - mid) ** 2 * spread * 0.2).toFixed(1)}px`;
+    const cards = props.map((t, i) => {
+      const gc = t.colorGroup ? s.board.groups[t.colorGroup].color : t.type === 'railroad' ? '#334155' : '#0e7490';
+      return `<button class="pcard ${t.mortgage ? 'mortgaged' : ''}" data-open="${t.id}" style="--gc:${gc};${fan(i)}" title="${esc(t.name)}">
+        <span class="pcard-band">${t.icon || ''}</span>
+        <span class="pcard-name">${esc(t.name)}</span>
+        <span class="pcard-level">${t.level === 5 ? '🏨' : '🏠'.repeat(t.level)}</span>
+        <span class="pcard-price">${fmt(t.price)}</span>
+      </button>`;
+    });
+    for (let k = 0; me && k < (me.cartasSaida || 0); k++) {
+      cards.push(`<div class="pcard pcard-hc" tabindex="0" style="${fan(props.length + k)}" title="Habeas Corpus: sai da prisão sem pagar">
+        <span class="pcard-band">🎫</span><span class="pcard-name">Habeas Corpus</span><span class="pcard-price">Sai da prisão</span></div>`);
+    }
+    const html = cards.join('') || (me ? '<p class="hint hand-empty">Suas propriedades aparecem aqui como cartas.</p>' : '');
+    if (html === this._handHtml) return;   // não recria as cartas à toa (o hover do mouse pularia)
+    this._handHtml = html;
+    el.innerHTML = html;
+    this.fitHand();
+  },
+
+  // Sobrepõe as cartas o suficiente para caberem na largura disponível
+  fitHand() {
+    const el = this.$('hand'), c = el.querySelector('.pcard');
+    if (!c) return;
+    const n = el.children.length, w = c.offsetWidth;
+    const ov = n > 1 ? Math.max(w * 0.28, (n * w - (el.clientWidth - 24)) / (n - 1)) : 0;
+    el.style.setProperty('--ov', ov + 'px');
+  },
+
+  // Detalhes de um jogador: dinheiro, bens e proposta de troca
+  openPlayerModal(id) {
+    const s = this.state, p = s && pById(s, id);
+    if (!p) return;
+    const me = pById(s, this.myId);
+    const props = p.propriedades.map(i => tileAt(s, i)).sort((a, b) => a.price - b.price || a.id - b.id);
+    const status = p.bancarroto ? 'Falido' : [currentPlayer(s) === p && s.phase !== 'order' ? '🎲 Jogando agora' : '',
+      p.preso ? '🔒 Preso' : '', p.conectado ? '' : '📴 Desconectado'].filter(Boolean).join(' · ') || 'Aguardando a vez';
+    let trade = '';
+    if (me && p.id !== me.id && !p.bancarroto && !me.bancarroto && s.phase !== 'gameover') {
+      const can = currentPlayer(s) === me && ['roll', 'end', 'debt'].includes(s.phase) && !s.trade;
+      trade = can ? `<button class="btn btn-primary" data-trade-with="${esc(p.id)}">🤝 Propor troca</button>`
+        : `<p class="hint w-full">${s.trade ? 'Já existe uma proposta de troca aguardando resposta.' : 'Você pode propor trocas durante a sua vez.'}</p>`;
+    }
+    this.openPlayerId = id;
+    this.openModal('player', `
+      <div class="flex items-center gap-3 mb-4" style="--pc:${esc(p.corPeao)}">
+        <span class="pchip-avatar">${esc(p.nome.charAt(0).toUpperCase())}</span>
+        <div class="min-w-0"><h2 class="text-xl font-bold truncate">${esc(p.nome)}${p.id === this.myId ? ' <span class="you">você</span>' : ''}</h2>
+          <p class="text-sm text-slate-400">${status}</p></div>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-4">
+        <div class="stat"><span>Dinheiro</span><b>${fmt(p.saldo)}</b></div>
+        <div class="stat"><span>Patrimônio</span><b>${fmt(netWorth(s, p))}</b></div>
+      </div>
+      <h3 class="panel-title">Propriedades (${props.length})</h3>
+      <div class="space-y-1 mb-3 max-h-64 overflow-y-auto">${props.map(t => `
+        <button class="prop-row" data-open="${t.id}">
+          <span class="prop-swatch" style="background:${t.colorGroup ? s.board.groups[t.colorGroup].color : '#94a3b8'}"></span>
+          <span class="flex-1 text-left truncate">${esc(t.name)}</span>
+          <span class="text-xs">${t.mortgage ? '<span class="text-red-400">HIPOTECADA</span>' : (t.level === 5 ? '🏨' : '🏠'.repeat(t.level))}</span>
+        </button>`).join('') || '<p class="hint">Nenhuma propriedade.</p>'}</div>
+      ${p.cartasSaida ? `<p class="mb-3 text-sm">🎫 Habeas Corpus ×${p.cartasSaida}</p>` : ''}
+      <div class="flex flex-wrap items-center gap-2">${trade}<button class="btn btn-secondary" data-close>Fechar</button></div>`);
   },
 
   renderLog(s) {
@@ -1116,6 +1176,7 @@ const UI = {
     this.modalKind = null;
     this._modalHtml = null;
     this.openTile = null;
+    this.openPlayerId = null;
     this._modalCardSeq = null;
     this.$('modal').classList.add('hidden');
   },
@@ -1183,7 +1244,7 @@ const UI = {
           <button class="btn btn-primary" data-act="buy" ${me.saldo < t.price ? 'disabled' : ''}>Comprar por ${fmt(t.price)}</button>
           <button class="btn btn-secondary" data-act="decline">Recusar</button>
         </div>
-        ${me.saldo < t.price ? '<p class="text-xs text-amber-300 mt-2">Saldo insuficiente: hipoteque propriedades no painel lateral ou recuse.</p>' : ''}`;
+        ${me.saldo < t.price ? '<p class="text-xs text-amber-300 mt-2">Saldo insuficiente: hipoteque propriedades (clique nas suas cartas) ou recuse.</p>' : ''}`;
       this.openModal('buy', html);
       return;
     }
@@ -1191,7 +1252,7 @@ const UI = {
       const html = this.cardBlock(s) + `
         <h2 class="text-xl font-bold mb-2">⚠️ Dívida de ${fmt(s.debt.amount)}</h2>
         <p class="mb-1">Credor: <b>${s.debt.splitTo ? 'os outros jogadores' : s.debt.creditorId ? esc(pById(s, s.debt.creditorId).nome) : 'Banco'}</b> · Seu saldo: <b>${fmt(me.saldo)}</b></p>
-        <p class="text-sm text-slate-300 mb-3">Venda construções ou hipoteque propriedades (toque nelas no painel) até ter saldo suficiente.</p>
+        <p class="text-sm text-slate-300 mb-3">Venda construções ou hipoteque propriedades abaixo até ter saldo suficiente.</p>
         <div class="space-y-1 mb-3">${me.propriedades.map(i => tileAt(s, i)).map(t => `
           <div class="flex items-center gap-2 text-sm">
             <span class="flex-1">${esc(t.name)}</span>
@@ -1226,13 +1287,14 @@ const UI = {
       const firstRender = this.lastCardSeq === 0 && this.lastRollSeq === s.rollSeq && !this._seenAny;
       this.lastCardSeq = s.lastCard.seq;
       const who = pById(s, s.lastCard.playerId);
-      if (!firstRender && !['tile', 'tradeEdit'].includes(this.modalKind)) {
+      if (!firstRender && !['tile', 'tradeEdit', 'player'].includes(this.modalKind)) {
         this.openModal('card', `<div class="card-face"><b>${DECK_LABEL[s.lastCard.deck]}</b> — ${esc(who ? who.nome : '')}<p class="text-lg my-3">${esc(s.lastCard.text)}</p></div>
           <button class="btn btn-primary" data-close>OK</button>`);
       }
     }
     this._seenAny = true;
     if (this.modalKind === 'tile') this.openTileModal(this.openTile);
+    if (this.modalKind === 'player') this.openPlayerModal(this.openPlayerId);
   },
 
   tileInfo(s, t) {
@@ -1324,25 +1386,58 @@ const UI = {
     this.closeModal();
   },
 
-  /* ---------- Zoom / pan do tabuleiro ---------- */
+  /* ---------- Câmera do tabuleiro ---------- */
+  // cam = ponto do tabuleiro (px, sem escala) que fica no centro da tela + escala
+  cam: { x: 0, y: 0, z: 1 },
+
+  // Tamanho das casas para o tabuleiro inteiro caber na área (escala 1)
   fitBoard() {
     const s = this.state, wrap = this.$('board-wrap');
     if (!s || !wrap) return;
     const units = s.board.side + 2 * 1.6 + 2 * 0.18;  // cantos valem 1,6 casa; moldura 0,18 casa de cada lado
     const chrome = 12 + 2 * (s.board.side + 1) + 4;   // padding + gaps do grid + folga
     const fit = (Math.min(wrap.clientWidth, wrap.clientHeight || wrap.clientWidth) - chrome) / units;
-    const cell = Math.max(28, Math.floor(fit * this.zoom * 0.98));
-    this.$('board').style.setProperty('--cell', cell + 'px');
+    this.$('board').style.setProperty('--cell', Math.max(28, Math.floor(fit * 0.98)) + 'px');
+    this.camHome(false);
+    this.fitHand();
   },
 
-  setZoom(z) {
-    this.zoom = Math.min(4, Math.max(0.5, z));
-    this.fitBoard();
+  applyCam(animate) {
+    const wrap = this.$('board-wrap'), board = this.$('board');
+    const W = wrap.clientWidth, H = wrap.clientHeight, bw = board.offsetWidth, bh = board.offsetHeight;
+    const { z } = this.cam;
+    // Com zoom, as bordas do tabuleiro param na borda da tela; menor que a tela, fica centralizado
+    const clamp = (v, half, size) => size * z <= 2 * half ? size / 2 : Math.min(size - half / z, Math.max(half / z, v));
+    const x = clamp(this.cam.x, W / 2, bw), y = clamp(this.cam.y, H / 2, bh);
+    this.cam = { x, y, z };
+    board.classList.toggle('cam-instant', !animate);
+    board.style.transform = `translate(${W / 2 - x * z}px, ${H / 2 - y * z}px) scale(${z})`;
   },
 
-  focusTile(i) {
-    const el = document.querySelector(`[data-tile="${i}"]`);
-    if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+  camHome(animate) {
+    const b = this.$('board');
+    this.cam = { x: b.offsetWidth / 2, y: b.offsetHeight / 2, z: this.zoom };
+    this.applyCam(animate);
+  },
+
+  // Aproxima e centraliza a casa do peão que está andando (a transição CSS suaviza o movimento)
+  camFollow(i) {
+    const b = this.$('board'), el = b.querySelector(`[data-tile="${i}"]`);
+    if (!el) return;
+    this.cam = { x: b.clientLeft + el.offsetLeft + el.offsetWidth / 2, y: b.clientTop + el.offsetTop + el.offsetHeight / 2, z: Math.max(this.zoom, FOLLOW_ZOOM) };
+    this.applyCam(true);
+  },
+
+  // Zoom mantendo parado o ponto sob (px, py) na tela (padrão: centro)
+  setZoom(z, px, py) {
+    const wrap = this.$('board-wrap');
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    px = px ?? W / 2; py = py ?? H / 2;
+    const old = this.cam.z;
+    this.zoom = Math.min(4, Math.max(1, z));
+    const bx = this.cam.x + (px - W / 2) / old, by = this.cam.y + (py - H / 2) / old;
+    this.cam = { x: bx - (px - W / 2) / this.zoom, y: by - (py - H / 2) / this.zoom, z: this.zoom };
+    this.applyCam(true);
   },
 
   /* ---------- Eventos de interface ---------- */
@@ -1358,14 +1453,18 @@ const UI = {
         if (this.modalKind === 'card') this.closeModal();
         return;
       }
-      if (e.target.closest('[data-close]') || (e.target.id === 'modal' && ['card', 'tile', 'tradeEdit'].includes(this.modalKind))) { this.closeModal(); return; }
+      if (e.target.closest('[data-close]') || (e.target.id === 'modal' && ['card', 'tile', 'tradeEdit', 'player'].includes(this.modalKind))) { this.closeModal(); return; }
+      const tw = e.target.closest('[data-trade-with]');
+      if (tw) { this.openTradeEditor(tw.dataset.tradeWith); return; }
+      const pl = e.target.closest('[data-player]');
+      if (pl) { this.openPlayerModal(pl.dataset.player); return; }
       const open = e.target.closest('[data-open]') || e.target.closest('[data-tile]');
       if (open && !this._dragged) this.openTileModal(Number(open.dataset.open ?? open.dataset.tile));
     });
     // Trocar o jogador da proposta recarrega a lista de propriedades dele
     document.addEventListener('change', e => { if (e.target.id === 'tr-to') this.openTradeEditor(e.target.value); });
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && ['card', 'tile', 'tradeEdit'].includes(this.modalKind)) this.closeModal();
+      if (e.key === 'Escape' && ['card', 'tile', 'tradeEdit', 'player'].includes(this.modalKind)) this.closeModal();
       // Mantém o foco do teclado dentro do modal aberto
       if (e.key === 'Tab' && this.modalKind) {
         const f = [...this.$('modal-box').querySelectorAll('button:not([disabled]), input:not([disabled]), select')];
@@ -1377,33 +1476,41 @@ const UI = {
     });
     this.$('zoom-in').onclick = () => this.setZoom(this.zoom * 1.25);
     this.$('zoom-out').onclick = () => this.setZoom(this.zoom / 1.25);
-    this.$('zoom-fit').onclick = () => this.setZoom(1);
-    this.$('btn-panel').onclick = () => this.$('sidebar').classList.toggle('open');
+    this.$('zoom-fit').onclick = () => { this.zoom = 1; this.camHome(true); };
     window.addEventListener('resize', () => this.fitBoard());
     // Aba escondida: a animação é abandonada (timers ficam lentíssimos em segundo plano)
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.skipAnim(); });
 
-    // Arrastar com o mouse para mover o tabuleiro (no toque, o scroll nativo já faz isso)
+    // Arrastar (mouse ou dedo) move a câmera; roda do mouse dá zoom
     const wrap = this.$('board-wrap');
     let drag = null;
     wrap.addEventListener('pointerdown', e => {
-      if (e.pointerType !== 'mouse') return;
-      drag = { x: e.clientX, y: e.clientY, l: wrap.scrollLeft, t: wrap.scrollTop };
+      drag = { x: e.clientX, y: e.clientY, cx: this.cam.x, cy: this.cam.y };
       this._dragged = false;
     });
     window.addEventListener('pointermove', e => {
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 5) this._dragged = true;
-      wrap.scrollLeft = drag.l - dx;
-      wrap.scrollTop = drag.t - dy;
+      if (!this._dragged) return;
+      this.cam = { x: drag.cx - dx / this.cam.z, y: drag.cy - dy / this.cam.z, z: this.cam.z };
+      this.applyCam(false);
     });
     window.addEventListener('pointerup', () => { drag = null; setTimeout(() => { this._dragged = false; }, 0); });
     wrap.addEventListener('wheel', e => {
-      if (!e.ctrlKey) return;
       e.preventDefault();
-      this.setZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 0.9));
+      const r = wrap.getBoundingClientRect();
+      this.setZoom(this.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
+
+    // Música de fundo (preferência salva no navegador)
+    const mb = this.$('btn-music');
+    const syncMusic = () => {
+      mb.setAttribute('aria-pressed', String(Music.on));
+      mb.querySelector('.music-icon').textContent = Music.on ? '🎵' : '🔇';
+    };
+    mb.onclick = () => { Music.toggle(); syncMusic(); };
+    syncMusic();
 
     // Cronômetro da partida
     setInterval(() => {

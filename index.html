@@ -7,7 +7,7 @@
   <meta name="description" content="Jogo de negociação de imóveis multiplayer P2P para 2 a 8 jogadores, com tabuleiro que cresce com o número de jogadores.">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body class="text-slate-100">
 
@@ -73,49 +73,39 @@
 
   <!-- ===================== JOGO ===================== -->
   <section id="screen-game" class="hidden h-screen flex flex-col">
-    <header class="game-header flex items-center gap-3 px-3 py-2 text-sm">
+    <header class="game-header flex items-center gap-3 px-3 py-1.5 text-sm">
       <span class="flex items-center gap-1"><span class="text-lg" aria-hidden="true">🏙️</span><span class="logo text-lg">MAGNATA</span></span>
       <span class="text-slate-400">Sala <b id="g-room" class="font-mono text-amber-300"></b></span>
       <span class="text-slate-400">⏱ <b id="g-timer"></b></span>
       <span class="flex-1"></span>
       <button id="btn-leave-game" class="btn-mini">Sair</button>
-      <button id="btn-panel" class="btn-mini lg:hidden" aria-controls="sidebar">☰ Painel</button>
     </header>
 
-    <div class="flex-1 flex min-h-0 relative">
-      <!-- Tabuleiro central (scroll/arrastar para mover, botões para zoom) -->
-      <main id="board-wrap" class="flex-1 overflow-auto relative">
-        <div id="board" class="board"></div>
+    <div class="game-layout">
+      <!-- Tabuleiro: arraste para mover, roda do mouse ou botões para zoom; a câmera segue o peão que anda -->
+      <main id="board-area" class="board-area">
+        <div id="board-wrap" class="board-wrap"><div id="board" class="board"></div></div>
+        <div class="zoom-controls">
+          <button id="zoom-in" aria-label="Aproximar">＋</button>
+          <button id="zoom-out" aria-label="Afastar">－</button>
+          <button id="zoom-fit" aria-label="Ver o tabuleiro inteiro">⤢</button>
+        </div>
       </main>
-      <div class="zoom-controls">
-        <button id="zoom-in" aria-label="Aproximar">＋</button>
-        <button id="zoom-out" aria-label="Afastar">－</button>
-        <button id="zoom-fit" aria-label="Ajustar à tela">⤢</button>
-      </div>
 
-      <!-- Sidebar direita: ações, saldo, propriedades, jogadores e eventos -->
-      <aside id="sidebar" class="sidebar">
-        <section class="panel">
-          <h2 id="turn-title" class="panel-title">Jogada</h2>
-          <div id="turn-panel" class="space-y-2"></div>
-        </section>
-        <section class="panel">
-          <h2 class="panel-title">Você</h2>
-          <div id="me-panel"></div>
-        </section>
-        <section class="panel">
-          <h2 class="panel-title">Jogadores</h2>
-          <div id="players-panel"></div>
-        </section>
-        <section class="panel flex-1 min-h-0 flex flex-col">
+      <!-- Direita: jogadores (clique para detalhes e troca), música e eventos -->
+      <aside class="side">
+        <div id="players-panel" class="players"></div>
+        <button id="btn-music" class="music-btn" aria-pressed="false" title="Ligar/desligar música"><span class="music-icon">🔇</span><span class="music-label">Música</span></button>
+        <section class="panel log-panel">
           <h2 class="panel-title">Eventos</h2>
           <div id="log" class="log" aria-live="polite"></div>
         </section>
       </aside>
-    </div>
 
-    <!-- Barra inferior (tablet/celular): foco no jogador local -->
-    <div id="bottom-bar" class="bottom-bar lg:hidden"></div>
+      <!-- Embaixo: carteira e a mão de cartas (propriedades e Habeas Corpus) -->
+      <div id="wallet" class="wallet"></div>
+      <div id="hand" class="hand" aria-label="Suas propriedades"></div>
+    </div>
   </section>
 
   <!-- Modal genérico (compra, construção, cartas, dívida, fim de jogo) -->
@@ -125,8 +115,9 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="banner" class="banner" aria-hidden="true"></div>
 
-  <script src="board.js"></script>
-  <script src="game.js"></script>
-  <script src="peer.js"></script>
+  <script src="board.js?v=9"></script>
+  <script src="game.js?v=9"></script>
+  <script src="music.js?v=9"></script>
+  <script src="peer.js?v=9"></script>
 </body>
 </html>

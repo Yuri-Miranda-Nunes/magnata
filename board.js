@@ -174,6 +174,7 @@ function buildBoardDOM(el, board) {
       <div id="center-turn" class="center-turn"></div>
       <div id="center-order" class="center-order hidden"></div>
       <div id="center-card" class="center-card hidden"></div>
+      <div id="actions" class="actions" aria-live="polite"></div>
     </div>`;
 }
 
