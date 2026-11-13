@@ -27,7 +27,7 @@ O diferencial é o **tabuleiro dinâmico**: ele cresce conforme o número de jog
 - **Hipoteca:** recebe metade do preço; quitar custa 55% do preço. Hipotecadas não cobram aluguel. Para hipotecar, venda antes as casas daquela propriedade.
 - **Sorte / Cofre Comunitário:** 16 cartas em cada baralho (andar, voltar, ir para o Início, receber ou pagar, prisão, turno extra, Habeas Corpus…).
 - **Prisão:** pague a fiança, use um Habeas Corpus ou tente tirar uma dupla. Na 3ª tentativa sem dupla, a fiança é paga automaticamente e você sai.
-- **Dívida:** se faltar dinheiro, venda construções ou hipoteque até conseguir pagar, ou declare falência. Se nem vendendo tudo der para pagar, a falência é automática. Os bens vão para o credor (ou voltam ao banco).
+- **Dívida:** se faltar dinheiro, venda construções ou hipoteque até conseguir pagar, ou declare falência. Se nem vendendo tudo der para pagar, a falência é automática. O dinheiro que sobrar vai para o credor e os terrenos voltam livres ao tabuleiro (sem casas e sem hipoteca), podendo ser comprados de novo.
 - Clique em **Encerrar turno** para passar a vez.
 - **Vitória:** o último jogador que não faliu vence. Se acabar o **limite de tempo** (padrão: 45 min), vence quem tiver o **maior patrimônio**.
 - Turno parado por 60 s recebe uma ação automática, para a partida não travar.

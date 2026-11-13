@@ -392,15 +392,12 @@ function autoLiquidate(s, p, amount) {
 function bankrupt(s, p, creditorId) {
   let cred = creditorId ? pById(s, creditorId) : null;
   if (cred && cred.bancarroto) cred = null;   // credor já saiu do jogo: bens voltam ao banco
-  log(s, `💀 ${p.nome} faliu${cred ? ` — os bens vão para ${cred.nome}` : ' — os bens voltam ao banco'}.`);
+  // O dinheiro que sobrou vai para o credor; os terrenos sempre voltam livres ao tabuleiro
+  log(s, `💀 ${p.nome} faliu — os terrenos voltam ao tabuleiro${cred && p.saldo > 0 ? ` e ${fmt(p.saldo)} vão para ${cred.nome}` : ''}.`);
   if (cred) cred.saldo += p.saldo;
   const wasCurrent = currentPlayer(s) === p;
   for (const d of Object.keys(s.jailCardOut || {})) if (s.jailCardOut[d] === p.id) s.jailCardOut[d] = null;
-  for (const i of p.declararFalencia()) {
-    const t = tileAt(s, i);
-    t.level = 0;
-    if (cred) { t.owner = cred.id; cred.propriedades.push(i); } else { t.owner = null; t.mortgage = false; }
-  }
+  for (const i of p.declararFalencia()) Object.assign(tileAt(s, i), { owner: null, level: 0, mortgage: false });
   if (wasCurrent) { s.debt = null; s.pendingBuy = null; s.pendingBuild = null; }
   if (s.trade && (s.trade.from === p.id || s.trade.to === p.id)) s.trade = null;
   removeFromTurns(s, p.id);

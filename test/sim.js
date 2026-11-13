@@ -171,6 +171,21 @@ const started = n => {
   checkInvariants(s);
   console.log('✔ credor falido não recebe dinheiro nem bens');
 }
+{
+  // Falência devendo a um jogador vivo: ele recebe o dinheiro que sobrou, os terrenos voltam ao tabuleiro
+  const s = started(3);
+  const [a, b] = s.turnos.map(id => G.pById(s, id));
+  const [t1, t2] = s.board.tiles.filter(x => x.type === 'property');
+  for (const t of [t1, t2]) { t.owner = a.id; a.propriedades.push(t.id); }
+  t1.level = 2; t2.mortgage = true;
+  a.saldo = 50; const bSaldo = b.saldo, bProps = b.propriedades.length;
+  G.bankrupt(s, a, b.id);
+  assert.strictEqual(b.saldo, bSaldo + 50, 'credor recebe o dinheiro restante');
+  assert.strictEqual(b.propriedades.length, bProps, 'credor não recebe terrenos');
+  for (const t of [t1, t2]) assert.deepStrictEqual([t.owner, t.level, t.mortgage], [null, 0, false]);
+  checkInvariants(s);
+  console.log('✔ falência devolve os terrenos ao tabuleiro');
+}
 
 // 8) "Pague a cada jogador" sem dinheiro abre dívida (jogador escolhe o que vender) e divide ao quitar
 {
